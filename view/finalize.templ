@@ -1,0 +1,11 @@
+package view
+
+import "friend-cal-app/data"
+
+templ FinalizeSuccessPage(user *data.User) {
+	@layout("Event Created!", user) {
+		<h1>Success! 🥳</h1>
+		<p>The calendar event has been created and invitations have been sent.</p>
+		<p><a href="/my-events">View your events</a> or <a href="/">create a new one</a>.</p>
+	}
+}

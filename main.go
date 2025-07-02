@@ -8,27 +8,27 @@ import (
 	"strings"
 	"sync"
 
+	"crypto/rand"
+	"encoding/base64"
 	"friend-cal-app/data"
 	"friend-cal-app/view"
-	"os" // For reading environment variables
+	"os"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/people/v1"
-)
-
-var (
-	googleOauthConfig *oauth2.Config
-	oauthStateString  = "random" // In a real app, generate a random string for security
 )
 
 //go:generate templ generate
 
 var (
-	events = make(map[string]*data.Event)
-	mu     sync.Mutex
+	googleOauthConfig *oauth2.Config
+	events            = make(map[string]*data.Event)
+	mu                sync.Mutex
 	// sessions maps a random session ID (the cookie value) to a Google user ID.
 	sessions = make(map[string]string)
 	// users maps a Google user ID to a User object.
@@ -37,11 +37,10 @@ var (
 
 func main() {
 	// --- OAUTH SETUP ---
-	// In a real app, load these from environment variables or a secret manager
 	googleOauthConfig = &oauth2.Config{
 		RedirectURL:  "http://localhost:8080/auth/google/callback",
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),     // <-- PLACE YOURS HERE (or in an env var)
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // <-- PLACE YOURS HERE (or in an env var)
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		Scopes: []string{
 			"https://www.googleapis.com/auth/calendar.events",
 			"https://www.googleapis.com/auth/contacts.readonly",
@@ -64,6 +63,8 @@ func main() {
 	mux.HandleFunc("GET /auth/google/callback", handleGoogleCallback)
 	mux.HandleFunc("GET /auth/google/logout", handleLogout)
 	mux.HandleFunc("GET /my-events", handleMyEvents)
+	mux.HandleFunc("POST /event/{id}/finalize", handleFinalizeEvent)
+	mux.HandleFunc("GET /finalize-success", handleFinalizeSuccess)
 
 	// 2. Register the file server using HandleFunc on a GET request.
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -74,7 +75,18 @@ func main() {
 }
 
 func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
-	url := googleOauthConfig.AuthCodeURL(oauthStateString)
+	b := make([]byte, 16)
+	rand.Read(b)
+	state := base64.URLEncoding.EncodeToString(b)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		Path:     "/",
+		Expires:  time.Now().Add(10 * time.Minute), // Cookie expires in 10 minutes
+		HttpOnly: true,
+	})
+
+	url := googleOauthConfig.AuthCodeURL(state)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -108,10 +120,26 @@ func getUser(r *http.Request) *data.User {
 }
 
 func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
-	if r.FormValue("state") != oauthStateString {
-		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+	// 1. Read the state value from the cookie.
+	oauthState, err := r.Cookie("oauth_state")
+	if err != nil {
+		http.Error(w, "Failed to read state cookie", http.StatusBadRequest)
 		return
 	}
+
+	// 2. Compare the cookie's state with the state from the redirect URL.
+	if r.FormValue("state") != oauthState.Value {
+		http.Error(w, "Invalid oauth state", http.StatusBadRequest)
+		return
+	}
+
+	// 3. Clean up by deleting the state cookie.
+	http.SetCookie(w, &http.Cookie{
+		Name:   "oauth_state",
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1, // Deletes the cookie
+	})
 
 	token, err := googleOauthConfig.Exchange(context.Background(), r.FormValue("code"))
 	if err != nil {
@@ -230,24 +258,27 @@ func handleMyEvents(w http.ResponseWriter, r *http.Request) {
 	attending := make(map[string]*data.Event)
 
 	mu.Lock()
+	defer mu.Unlock()
+
 	for id, event := range events {
+
 		// Check if the user organized this event
 		if event.OrganizerID == user.GoogleID {
 			organized[id] = event
-			continue // Don't show an organized event in the attending list too
+			//continue //this continue is being removed so events you organize show up in attending list. not sure if im a fan of that tho...
 		}
 
-		// New, reliable check for attendance.
+	AttendLoop:
+		// Now, always check for attendance, even if they are the organizer.
 		for _, voterIDs := range event.Votes {
 			for _, voterID := range voterIDs {
 				if voterID == user.GoogleID {
 					attending[id] = event
-					break // Found user, no need to check other dates
+					break AttendLoop // Found user, stop checking this event
 				}
 			}
 		}
 	}
-	mu.Unlock()
 
 	view.MyEventsPage(user, organized, attending).Render(context.Background(), w)
 }
@@ -312,4 +343,83 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 func handleThanksPage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r) // Get the current user
 	view.ThanksPage(user).Render(context.Background(), w)
+}
+
+// In main.go
+
+func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
+	// 1. Get the logged-in user (the organizer).
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+
+	// 2. Get the event and check that the user is the organizer.
+	eventID := r.PathValue("id")
+	mu.Lock()
+	event, ok := events[eventID]
+	mu.Unlock()
+	if !ok || event.OrganizerID != user.GoogleID {
+		http.Error(w, "Event not found or you are not the organizer", http.StatusForbidden)
+		return
+	}
+
+	// 3. Get the final date from the submitted form.
+	r.ParseForm()
+	finalDate := r.FormValue("finalDate")
+
+	// 4. Gather the list of attendees' emails.
+	attendeeEmails := []string{}
+	uniqueVoterIDs := make(map[string]bool)
+	mu.Lock()
+	for _, voterIDs := range event.Votes {
+		for _, voterID := range voterIDs {
+			// Ensure each person is only invited once.
+			if !uniqueVoterIDs[voterID] {
+				if voter := users[voterID]; voter != nil {
+					attendeeEmails = append(attendeeEmails, voter.Email)
+				}
+				uniqueVoterIDs[voterID] = true
+			}
+		}
+	}
+	mu.Unlock()
+
+	// 5. Create a Google Calendar client using the organizer's stored token.
+	client := googleOauthConfig.Client(context.Background(), user.AccessToken)
+	calService, err := calendar.NewService(context.Background(), option.WithHTTPClient(client))
+	if err != nil {
+		http.Error(w, "Could not create calendar service: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 6. Construct the calendar event.
+	// For simplicity, this creates an all-day event.
+	calendarEvent := &calendar.Event{
+		Summary: event.Name,
+		Start:   &calendar.EventDateTime{Date: finalDate},
+		End:     &calendar.EventDateTime{Date: finalDate},
+	}
+
+	// Add the attendees to the event.
+	for _, email := range attendeeEmails {
+		calendarEvent.Attendees = append(calendarEvent.Attendees, &calendar.EventAttendee{Email: email})
+	}
+
+	// 7. Insert the event into the organizer's primary calendar.
+	_, err = calService.Events.Insert("primary", calendarEvent).SendUpdates("all").Do()
+	if err != nil {
+		http.Error(w, "Unable to create calendar event: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 8. Redirect to a success page.
+	http.Redirect(w, r, "/finalize-success", http.StatusSeeOther)
+}
+
+// In main.go
+func handleFinalizeSuccess(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	view.FinalizeSuccessPage(user).Render(context.Background(), w)
 }
