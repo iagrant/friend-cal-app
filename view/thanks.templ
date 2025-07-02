@@ -1,0 +1,11 @@
+package view
+
+import "friend-cal-app/data"
+
+templ ThanksPage(user *data.User) {
+	@layout("Thanks for Voting!", user) {
+		<h1>Thank You! ✅</h1>
+		<p>Your vote has been recorded.</p>
+		<p><a href="/">Create another event</a></p>
+	}
+}

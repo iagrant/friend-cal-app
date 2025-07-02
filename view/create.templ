@@ -1,0 +1,19 @@
+package view
+
+import "friend-cal-app/data"
+
+// 1. Accept the user object here.
+templ CreatePage(user *data.User) {
+	// 2. Pass the user to the layout here.
+	@layout("Create New Event", user) {
+		<h1>Create a New Event</h1>
+		<form action="/create" method="post">
+			<label for="eventName">Event Name:</label>
+			<input type="text" id="eventName" name="eventName" required/>
+			<label for="date-picker">Suggested Dates 🗓️:</label>
+			<input type="text" id="date-picker" placeholder="Click to select dates..."/>
+			<input type="hidden" id="dates" name="dates"/>
+			<button type="submit">Create Event</button>
+		</form>
+	}
+}

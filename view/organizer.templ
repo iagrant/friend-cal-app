@@ -1,0 +1,62 @@
+package view
+
+import (
+	"fmt"
+	"friend-cal-app/data"
+)
+
+// The component now accepts organizerURL and guestURL.
+templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, allUsers map[string]*data.User) {
+	@layout("Organizer: " + event.Name, user) {
+		// This new section displays the shareable links.
+		<div>
+			<h3>Event Links</h3>
+			<p>
+				<strong>Bookmark this page (Organizer View):</strong>
+				<a href={ organizerURL }>{ organizerURL }</a>
+			</p>
+			<p>
+				<strong>Send this link to your friends:</strong>
+				<a href={ guestURL }>{ guestURL }</a>
+			</p>
+		</div>
+
+		<hr/>
+
+		<h1>{ event.Name } - Poll Results</h1>
+
+		for _, date := range event.Dates {
+			<div>
+				<h3>{ date }</h3>
+				if len(event.Votes[date]) > 0 {
+					<p>{ fmt.Sprintf("%d vote(s)", len(event.Votes[date])) }</p>
+					<ul>
+						// 2. Loop through voter IDs
+						for _, voterID := range event.Votes[date] {
+							// 3. Look up the user's name from the map
+							if voter := allUsers[voterID]; voter != nil {
+								<li>{ voter.Name } ({ voter.Email })</li>
+							}
+						}
+					</ul>
+				} else {
+					<p>0 votes</p>
+				}
+			</div>
+		}
+
+		<hr/>
+
+		<h2>Finalize Event</h2>
+		<p>Select the winning date and send the invites.</p>
+		<form action={ "/event/" + eventID + "/finalize" } method="post">
+			<label for="finalDate">Select the final date:</label>
+			<select name="finalDate" id="finalDate">
+				for _, date := range event.Dates {
+					<option value={ date }>{ date }</option>
+				}
+			</select>
+			<button type="submit">Send Google Calendar Invites</button>
+		</form>
+	}
+}

@@ -1,0 +1,33 @@
+package view
+
+import "friend-cal-app/data"
+
+templ MyEventsPage(user *data.User, organizedEvents map[string]*data.Event, attendedEvents map[string]*data.Event) {
+	@layout("My Events", user) {
+		<h1>My Events</h1>
+
+		<h2>Organized by Me</h2>
+		if len(organizedEvents) > 0 {
+			<ul>
+				for id, event := range organizedEvents {
+					<li><a href={ "/event/" + id + "/organizer" }>{ event.Name }</a></li>
+				}
+			</ul>
+		} else {
+			<p>You haven't organized any events. <a href="/">Create one!</a></p>
+		}
+
+		<hr/>
+
+		<h2>Attending</h2>
+		if len(attendedEvents) > 0 {
+			<ul>
+				for id, event := range attendedEvents {
+					<li><a href={ "/event/" + id }>{ event.Name }</a></li>
+				}
+			</ul>
+		} else {
+			<p>You haven't voted in any event polls yet.</p>
+		}
+	}
+}
