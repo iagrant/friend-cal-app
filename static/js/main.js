@@ -96,3 +96,19 @@ function copyGuestLink() {
     alert('Failed to copy link.');
   });
 }
+
+function validateCreateForm() {
+  // Find the hidden input that holds the dates.
+  const datesInput = document.getElementById('dates');
+
+  // Check if its value is empty.
+  if (datesInput.value.trim() === '') {
+    // If it's empty, show an alert message.
+    alert('Please select at least one date for the event.');
+    // And cancel the form submission.
+    return false;
+  }
+
+  // If dates are present, allow the form to submit.
+  return true;
+}

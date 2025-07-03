@@ -253,6 +253,10 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	endTimeStr := r.FormValue("endTime")
 	datesStr := r.FormValue("dates")
 	dates := strings.Split(datesStr, ",")
+	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
+		http.Error(w, "Please select at least one date.", http.StatusBadRequest)
+		return
+	}
 	for i, d := range dates {
 		dates[i] = strings.TrimSpace(d)
 	}
