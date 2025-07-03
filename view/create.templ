@@ -9,8 +9,16 @@ templ CreatePage(user *data.User) {
 		if user != nil {
 			<h1>Create a New Event</h1>
 			<form action="/create" method="post">
-				<label for="eventName">Event Name:</label>
-				<input type="text" id="eventName" name="eventName" required/>
+				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+					<div>
+						<label for="eventName">Event Name:</label>
+						<input type="text" id="eventName" name="eventName" required/>
+					</div>
+					<div>
+						<label for="location">Location (optional)</label>
+						<input type="text" id="location" name="location"/>
+					</div>
+				</div>
 				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 					<div>
 						<label for="startTime">Start Time (optional)</label>

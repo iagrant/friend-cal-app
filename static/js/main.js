@@ -61,3 +61,30 @@ function toggleTimeFormat() {
 
   location.reload();
 }
+
+// Add this new function to static/js/main.js
+
+function copyGuestLink() {
+  // Find the link and the button by their IDs
+  const link = document.getElementById('guest-link');
+  const copyBtn = document.getElementById('copy-btn');
+  
+  if (!link || !copyBtn) return;
+
+  // Use the Clipboard API to copy the link's href value
+  navigator.clipboard.writeText(link.href).then(() => {
+    // On success, give the user feedback
+    const originalIcon = copyBtn.textContent;
+    copyBtn.textContent = '✅';
+    copyBtn.disabled = true;
+
+    // Change it back after 2 seconds
+    setTimeout(() => {
+      copyBtn.textContent = originalIcon;
+      copyBtn.disabled = false;
+    }, 2000);
+  }).catch(err => {
+    console.error('Failed to copy link: ', err);
+    alert('Failed to copy link.');
+  });
+}

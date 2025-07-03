@@ -9,6 +9,10 @@ import (
 templ EventPage(event data.Event, eventID string, user *data.User, userVotes map[string]bool, currentURL string, formatPreference string) {
 	@layout(event.Name, user) {
 		<h1>{ event.Name }</h1>
+		if event.Location != "" {
+    		<p><strong>Where:</strong> { event.Location }</p>
+		}
+
 		if event.StartTime != "" && event.EndTime != "" {
 			<p><strong>Time:</strong> { utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) }</p>
 		}

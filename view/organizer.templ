@@ -10,21 +10,23 @@ import (
 templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, allUsers map[string]*data.User, formatPreference string) {
 	@layout("Organizer: " + event.Name, user) {
 		// This new section displays the shareable links.
-		<div>
-			<h3>Event Links</h3>
-			<p>
-				<strong>Bookmark this page (Organizer View):</strong>
-				<a href={ organizerURL }>{ organizerURL }</a>
-			</p>
-			<p>
-				<strong>Send this link to your friends:</strong>
-				<a href={ guestURL }>{ guestURL }</a>
-			</p>
+		<div style="display: flex; align-items: baseline; gap: 0.5rem;">
+			<h3 style="margin: 0;">Copy Link to Clipboard:</h3>
+			<button id="copy-btn" onclick="copyGuestLink()" title="Copy link to clipboard" style="background:none; border:none; font-size:1.5rem; cursor:pointer; padding:0;">📋</button>
 		</div>
+		<p>
+			// We add an id to the link so JavaScript can find it
+			<strong>Link to share:</strong>
+			<a id="guest-link" href={ guestURL }>{ guestURL }</a>
+		</p>
 
 		<hr/>
 
 		<h1>{ event.Name } - Poll Results</h1>
+		if event.Location != "" {
+    		<p><strong>Where:</strong> { event.Location }</p>
+		}
+
 		if event.StartTime != "" && event.EndTime != "" {
 			<p><strong>Time:</strong> { utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) }</p>
 		}

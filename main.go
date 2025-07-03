@@ -240,6 +240,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	r.ParseForm()
 	eventName := r.FormValue("eventName")
+	location := r.FormValue("location")
 	datesStr := r.FormValue("dates")
 	startTime := r.FormValue("startTime")
 	endTime := r.FormValue("endTime")
@@ -254,6 +255,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	eventID := uuid.New().String()
 	events[eventID] = &data.Event{
 		Name:        eventName,
+		Location:    location,
 		Dates:       dates,
 		Votes:       make(map[string][]string),
 		OrganizerID: user.GoogleID,
@@ -449,7 +451,8 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Construct the calendar event.
 	calendarEvent := &calendar.Event{
-		Summary: event.Name,
+		Summary:  event.Name,
+		Location: event.Location,
 	}
 
 	// Check if start and end times were provided for the event.

@@ -11,6 +11,7 @@ type Event struct {
 	OrganizerID string
 	StartTime   string
 	EndTime     string
+	Location    string
 }
 
 type User struct {
