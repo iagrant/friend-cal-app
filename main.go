@@ -231,19 +231,27 @@ func handleShowCreatePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
-	// Get the logged-in user.
 	user := getUser(r)
 	if user == nil {
-		// Redirect to login if they aren't signed in.
 		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
 		return
 	}
+
 	r.ParseForm()
+
+	// Get the timezone from the cookie.
+	tzCookie, _ := r.Cookie("timezone")
+	userTimezone := "UTC" // Default to UTC if no cookie
+	if tzCookie != nil {
+		userTimezone = tzCookie.Value
+	}
+
+	// Get all other form values.
 	eventName := r.FormValue("eventName")
 	location := r.FormValue("location")
+	startTimeStr := r.FormValue("startTime")
+	endTimeStr := r.FormValue("endTime")
 	datesStr := r.FormValue("dates")
-	startTime := r.FormValue("startTime")
-	endTime := r.FormValue("endTime")
 	dates := strings.Split(datesStr, ",")
 	for i, d := range dates {
 		dates[i] = strings.TrimSpace(d)
@@ -259,26 +267,33 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		Dates:       dates,
 		Votes:       make(map[string][]string),
 		OrganizerID: user.GoogleID,
-		StartTime:   startTime,
-		EndTime:     endTime,
+		StartTime:   startTimeStr,
+		EndTime:     endTimeStr,
+		Timezone:    userTimezone,
 	}
 
 	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
 }
 
 func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
-	user := getUser(r) // Get the current user
+	// Get user's display preferences from cookies
 	formatPref := getFormatPreference(r)
+
+	user := getUser(r)
 	eventID := r.PathValue("id")
+
 	mu.Lock()
-	defer mu.Unlock()
 	event, ok := events[eventID]
+	mu.Unlock() // Unlock after reading from shared maps
+
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+
 	userVotes := make(map[string]bool)
 	if user != nil {
+		mu.Lock()
 		for date, voterIDs := range event.Votes {
 			for _, voterID := range voterIDs {
 				if voterID == user.GoogleID {
@@ -286,7 +301,10 @@ func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		mu.Unlock()
 	}
+
+	// Pass all necessary data to the template
 	view.EventPage(*event, eventID, user, userVotes, r.URL.String(), formatPref).Render(context.Background(), w)
 }
 
@@ -403,14 +421,12 @@ func handleThanksPage(w http.ResponseWriter, r *http.Request) {
 // In main.go
 
 func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
-	// 1. Get the logged-in user (the organizer).
+	// Get User and Event, and check authorization
 	user := getUser(r)
 	if user == nil {
 		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
 		return
 	}
-
-	// 2. Get the event and check that the user is the organizer.
 	eventID := r.PathValue("id")
 	mu.Lock()
 	event, ok := events[eventID]
@@ -419,18 +435,15 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Event not found or you are not the organizer", http.StatusForbidden)
 		return
 	}
-
-	// 3. Get the final date from the submitted form.
 	r.ParseForm()
 	finalDate := r.FormValue("finalDate")
 
-	// 4. Gather the list of attendees' emails.
+	// Gather attendees
 	attendeeEmails := []string{}
 	uniqueVoterIDs := make(map[string]bool)
 	mu.Lock()
 	for _, voterIDs := range event.Votes {
 		for _, voterID := range voterIDs {
-			// Ensure each person is only invited once.
 			if !uniqueVoterIDs[voterID] {
 				if voter := users[voterID]; voter != nil {
 					attendeeEmails = append(attendeeEmails, voter.Email)
@@ -441,7 +454,7 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	mu.Unlock()
 
-	// 5. Create a Google Calendar client using the organizer's stored token.
+	// Create a Google Calendar client using the organizer's stored token.
 	client := googleOauthConfig.Client(context.Background(), user.AccessToken)
 	calService, err := calendar.NewService(context.Background(), option.WithHTTPClient(client))
 	if err != nil {
@@ -449,51 +462,58 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Construct the calendar event.
+	// Construct the calendar event
 	calendarEvent := &calendar.Event{
 		Summary:  event.Name,
 		Location: event.Location,
 	}
 
-	// Check if start and end times were provided for the event.
+	// Handle timed vs. all-day events
 	if event.StartTime != "" && event.EndTime != "" {
-		// --- Create a TIMED event ---
-		// Combine the final date with the event time and format as RFC3339.
-		// NOTE: This uses the server's local time zone.
-		const layout = "2006-01-02T15:04:05" // Go's specific layout string for parsing.
+		// Use the timezone stored with the event.
+		loc, err := time.LoadLocation(event.Timezone)
+		if err != nil {
+			loc, _ = time.LoadLocation("UTC")
+			fmt.Printf("Invalid timezone '%s', defaulting to UTC. Error: %v\n", event.Timezone, err)
+		}
 
-		startDateTimeStr := fmt.Sprintf("%sT%s:00", finalDate, event.StartTime)
-		endDateTimeStr := fmt.Sprintf("%sT%s:00", finalDate, event.EndTime)
+		// Combine date and time strings.
+		startStr := fmt.Sprintf("%sT%s:00", finalDate, event.StartTime)
+		endStr := fmt.Sprintf("%sT%s:00", finalDate, event.EndTime)
 
-		startDateTime, _ := time.Parse(layout, startDateTimeStr)
-		endDateTime, _ := time.Parse(layout, endDateTimeStr)
+		// Parse the full strings in the event's original timezone.
+		layout := "2006-01-02T15:04:05"
+		startTime, _ := time.ParseInLocation(layout, startStr, loc)
+		endTime, _ := time.ParseInLocation(layout, endStr, loc)
+
+		// Validate that the parsed end time is after the start time.
+		if !endTime.After(startTime) {
+			http.Error(w, "Invalid time range: The end time must be after the start time.", http.StatusBadRequest)
+			return
+		}
 
 		calendarEvent.Start = &calendar.EventDateTime{
-			DateTime: startDateTime.Format(time.RFC3339),
+			DateTime: startTime.Format(time.RFC3339),
 		}
 		calendarEvent.End = &calendar.EventDateTime{
-			DateTime: endDateTime.Format(time.RFC3339),
+			DateTime: endTime.Format(time.RFC3339),
 		}
-
 	} else {
-		// --- Create an ALL-DAY event ---
+		// All-day event
 		calendarEvent.Start = &calendar.EventDateTime{Date: finalDate}
 		calendarEvent.End = &calendar.EventDateTime{Date: finalDate}
 	}
 
-	// Add attendees (this logic is the same)
+	// Add attendees to the event.
 	for _, email := range attendeeEmails {
 		calendarEvent.Attendees = append(calendarEvent.Attendees, &calendar.EventAttendee{Email: email})
 	}
 
-	// 7. Insert the event into the organizer's primary calendar.
 	_, err = calService.Events.Insert("primary", calendarEvent).SendUpdates("all").Do()
 	if err != nil {
 		http.Error(w, "Unable to create calendar event: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// 8. Redirect to a success page.
 	http.Redirect(w, r, "/finalize-success", http.StatusSeeOther)
 }
 

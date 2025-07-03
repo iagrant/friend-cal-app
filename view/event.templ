@@ -14,7 +14,11 @@ templ EventPage(event data.Event, eventID string, user *data.User, userVotes map
 		}
 
 		if event.StartTime != "" && event.EndTime != "" {
-			<p><strong>Time:</strong> { utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) }</p>
+			<p>
+				<strong>Time:</strong>
+				{ utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) }
+				({ event.Timezone })
+			</p>
 		}
 		// Check if the user is logged in
 		if user != nil {

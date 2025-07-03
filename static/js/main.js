@@ -1,5 +1,13 @@
 // Waits for the page to load before running any scripts.
 document.addEventListener('DOMContentLoaded', function () {
+   // --- Set Timezone Cookie ---
+  if (!getCookie('timezone')) {
+    const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // Set the cookie to expire in one year.
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 1); 
+    document.cookie = `timezone=${userTimezone};path=/;expires=${expiryDate.toUTCString()};SameSite=Lax`;
+  }
   // --- Initialize Date Picker ---
   const datePicker = document.querySelector('#date-picker');
   if (datePicker) {

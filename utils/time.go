@@ -1,6 +1,8 @@
 package utils
 
-import "time"
+import (
+	"time"
+)
 
 // FormatTime converts a 24-hour time string (like "14:30")
 // into a specified format ("12h" or "24h").

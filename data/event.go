@@ -1,6 +1,8 @@
 package data
 
-import "golang.org/x/oauth2"
+import (
+	"golang.org/x/oauth2"
+)
 
 // Event holds all the information for a single event poll.
 // Note that all fields start with a capital letter, making them public.
@@ -11,6 +13,7 @@ type Event struct {
 	OrganizerID string
 	StartTime   string
 	EndTime     string
+	Timezone    string
 	Location    string
 }
 
