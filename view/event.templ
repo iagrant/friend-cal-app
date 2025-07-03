@@ -1,25 +1,40 @@
 package view
 
-import "friend-cal-app/data"
+import ( 
+	"friend-cal-app/data"
+	"friend-cal-app/utils"
+	"fmt"
+)
 
-templ EventPage(event data.Event, eventID string, user *data.User) {
+templ EventPage(event data.Event, eventID string, user *data.User, userVotes map[string]bool, currentURL string, formatPreference string) {
 	@layout(event.Name, user) {
 		<h1>{ event.Name }</h1>
-		<p>Please select the dates that work for you:</p>
+		if event.StartTime != "" && event.EndTime != "" {
+			<p><strong>Time:</strong> { utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) }</p>
+		}
+		// Check if the user is logged in
+		if user != nil {
+			<p>Please select the dates that work for you:</p>
 
-		// Add the onsubmit attribute to the form tag.
-		<form action={ "/event/" + eventID + "/vote" } method="post" onsubmit="document.getElementById('submit-btn').disabled = true;">
-			<fieldset>
-				<legend>Available Dates</legend>
-				for _, date := range event.Dates {
-					<label for={ date }>
-						<input type="checkbox" id={ date } name="dates" value={ date }/>
-						{ date }
-					</label>
-				}
-			</fieldset>
-			// Add an id to the button so the javascript can find it.
-			<button type="submit" id="submit-btn">Submit My Votes</button>
-		</form>
+			// Add the onsubmit attribute to the form tag.
+			<form action={ "/event/" + eventID + "/vote" } method="post" onsubmit="document.getElementById('submit-btn').disabled = true;">
+				<fieldset>
+					<legend>Available Dates</legend>
+					for _, date := range event.Dates {
+						<label for={ date }>
+							<input type="checkbox" id={ date } name="dates" value={ date } checked?={ userVotes[date]}/>
+							{ date }
+						</label>
+					}
+				</fieldset>
+				// Add an id to the button so the javascript can find it.
+				<button type="submit" id="submit-btn">Submit My Votes</button>
+			</form>
+		} else {
+			// If they are not, show a login prompt instead.
+			<p>
+				<a href={ templ.URL(fmt.Sprintf("/auth/google/login?redirect_url=%s", currentURL)) }>Sign in with Google</a> to vote in this poll.
+			</p>
+		}
 	}
 }

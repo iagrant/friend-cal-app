@@ -78,6 +78,17 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	b := make([]byte, 16)
 	rand.Read(b)
 	state := base64.URLEncoding.EncodeToString(b)
+	redirectURL := r.URL.Query().Get("redirect_url")
+	if redirectURL != "" {
+		// If it exists, store it in a temporary cookie.
+		http.SetCookie(w, &http.Cookie{
+			Name:     "login_redirect_url",
+			Value:    redirectURL,
+			Path:     "/",
+			Expires:  time.Now().Add(10 * time.Minute),
+			HttpOnly: true,
+		})
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
@@ -190,6 +201,22 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil, // Only send over HTTPS in production
 		SameSite: http.SameSiteLaxMode,
 	})
+	redirectCookie, err := r.Cookie("login_redirect_url")
+	if err == nil && redirectCookie.Value != "" {
+		// If it exists, redirect there.
+		url := redirectCookie.Value
+
+		// Clean up the redirect cookie.
+		http.SetCookie(w, &http.Cookie{
+			Name:   "login_redirect_url",
+			Value:  "",
+			Path:   "/",
+			MaxAge: -1,
+		})
+
+		http.Redirect(w, r, url, http.StatusSeeOther)
+		return
+	}
 
 	// Redirect to the home page.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -199,7 +226,7 @@ func handleShowCreatePage(w http.ResponseWriter, r *http.Request) {
 	// Get the current user. It will be nil if they're not logged in.
 	user := getUser(r) // Get the current user
 	// Pass the user to the view.
-	fmt.Printf("User on homepage: %+v\n", user)
+	//fmt.Printf("User on homepage: %+v\n", user)
 	view.CreatePage(user).Render(context.Background(), w)
 }
 
@@ -214,6 +241,8 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	eventName := r.FormValue("eventName")
 	datesStr := r.FormValue("dates")
+	startTime := r.FormValue("startTime")
+	endTime := r.FormValue("endTime")
 	dates := strings.Split(datesStr, ",")
 	for i, d := range dates {
 		dates[i] = strings.TrimSpace(d)
@@ -222,12 +251,14 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	eventID := uuid.New().String()[:8]
+	eventID := uuid.New().String()
 	events[eventID] = &data.Event{
 		Name:        eventName,
 		Dates:       dates,
 		Votes:       make(map[string][]string),
 		OrganizerID: user.GoogleID,
+		StartTime:   startTime,
+		EndTime:     endTime,
 	}
 
 	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
@@ -235,16 +266,26 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 
 func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r) // Get the current user
+	formatPref := getFormatPreference(r)
 	eventID := r.PathValue("id")
 	mu.Lock()
+	defer mu.Unlock()
 	event, ok := events[eventID]
-	mu.Unlock()
-
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	view.EventPage(*event, eventID, user).Render(context.Background(), w)
+	userVotes := make(map[string]bool)
+	if user != nil {
+		for date, voterIDs := range event.Votes {
+			for _, voterID := range voterIDs {
+				if voterID == user.GoogleID {
+					userVotes[date] = true
+				}
+			}
+		}
+	}
+	view.EventPage(*event, eventID, user, userVotes, r.URL.String(), formatPref).Render(context.Background(), w)
 }
 
 func handleMyEvents(w http.ResponseWriter, r *http.Request) {
@@ -325,19 +366,31 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 
 func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r) // Get the current user
+	if user == nil {
+		// If not, redirect to the login page, remembering where they tried to go.
+		loginURL := fmt.Sprintf("/auth/google/login?redirect_url=%s", r.URL.Path)
+		http.Redirect(w, r, loginURL, http.StatusSeeOther)
+		return
+	}
+
 	eventID := r.PathValue("id")
 	mu.Lock()
+	defer mu.Unlock()
 	event, ok := events[eventID]
-	mu.Unlock()
-
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	if event.OrganizerID != user.GoogleID {
+		// If they aren't the organizer, deny access.
+		http.Error(w, "Forbidden: You are not the organizer of this event.", http.StatusForbidden)
+		return
+	}
 
+	formatPref := getFormatPreference(r)
 	organizerURL := fmt.Sprintf("/event/%s/organizer", eventID)
 	guestURL := fmt.Sprintf("/event/%s", eventID)
-	view.OrganizerPage(*event, eventID, organizerURL, guestURL, user, users).Render(context.Background(), w)
+	view.OrganizerPage(*event, eventID, organizerURL, guestURL, user, users, formatPref).Render(context.Background(), w)
 }
 
 func handleThanksPage(w http.ResponseWriter, r *http.Request) {
@@ -395,14 +448,37 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Construct the calendar event.
-	// For simplicity, this creates an all-day event.
 	calendarEvent := &calendar.Event{
 		Summary: event.Name,
-		Start:   &calendar.EventDateTime{Date: finalDate},
-		End:     &calendar.EventDateTime{Date: finalDate},
 	}
 
-	// Add the attendees to the event.
+	// Check if start and end times were provided for the event.
+	if event.StartTime != "" && event.EndTime != "" {
+		// --- Create a TIMED event ---
+		// Combine the final date with the event time and format as RFC3339.
+		// NOTE: This uses the server's local time zone.
+		const layout = "2006-01-02T15:04:05" // Go's specific layout string for parsing.
+
+		startDateTimeStr := fmt.Sprintf("%sT%s:00", finalDate, event.StartTime)
+		endDateTimeStr := fmt.Sprintf("%sT%s:00", finalDate, event.EndTime)
+
+		startDateTime, _ := time.Parse(layout, startDateTimeStr)
+		endDateTime, _ := time.Parse(layout, endDateTimeStr)
+
+		calendarEvent.Start = &calendar.EventDateTime{
+			DateTime: startDateTime.Format(time.RFC3339),
+		}
+		calendarEvent.End = &calendar.EventDateTime{
+			DateTime: endDateTime.Format(time.RFC3339),
+		}
+
+	} else {
+		// --- Create an ALL-DAY event ---
+		calendarEvent.Start = &calendar.EventDateTime{Date: finalDate}
+		calendarEvent.End = &calendar.EventDateTime{Date: finalDate}
+	}
+
+	// Add attendees (this logic is the same)
 	for _, email := range attendeeEmails {
 		calendarEvent.Attendees = append(calendarEvent.Attendees, &calendar.EventAttendee{Email: email})
 	}
@@ -422,4 +498,12 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 func handleFinalizeSuccess(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	view.FinalizeSuccessPage(user).Render(context.Background(), w)
+}
+
+func getFormatPreference(r *http.Request) string {
+	cookie, err := r.Cookie("time_format")
+	if err != nil || (cookie.Value != "12h" && cookie.Value != "24h") {
+		return "24h" // Default to 24-hour format
+	}
+	return cookie.Value
 }

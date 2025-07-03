@@ -6,14 +6,35 @@ import "friend-cal-app/data"
 templ CreatePage(user *data.User) {
 	// 2. Pass the user to the layout here.
 	@layout("Create New Event", user) {
-		<h1>Create a New Event</h1>
-		<form action="/create" method="post">
-			<label for="eventName">Event Name:</label>
-			<input type="text" id="eventName" name="eventName" required/>
-			<label for="date-picker">Suggested Dates 🗓️:</label>
-			<input type="text" id="date-picker" placeholder="Click to select dates..."/>
-			<input type="hidden" id="dates" name="dates"/>
-			<button type="submit">Create Event</button>
-		</form>
+		if user != nil {
+			<h1>Create a New Event</h1>
+			<form action="/create" method="post">
+				<label for="eventName">Event Name:</label>
+				<input type="text" id="eventName" name="eventName" required/>
+				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+					<div>
+						<label for="startTime">Start Time (optional)</label>
+						<input type="text" id="start-time-picker" name="startTime" placeholder="Select start time..."/>
+					</div>
+					<div>
+						<label for="endTime">End Time (optional)</label>
+						<input type="text" id="end-time-picker" name="endTime" placeholder="Select end time..."/>
+					</div>
+				</div>
+				<label for="date-picker">Suggested Dates 🗓️:</label>
+				<input type="text" id="date-picker" placeholder="Click to select dates..."/>
+				<input type="hidden" id="dates" name="dates"/>
+				<button type="submit">Create Event</button>
+			</form>
+		} else {
+			// If they are not logged in, show a login prompt instead.
+			<div style="text-align: center;">
+				<h1>Welcome to Friend Planner!</h1>
+				<p>The easiest over-engineered way to coordinate with friends!</p>
+				<p>
+					<a href="/auth/google/login" class="button">Sign in with Google to Create an Event</a>
+				</p>
+			</div>
+		}
 	}
 }

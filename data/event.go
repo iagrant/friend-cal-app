@@ -9,6 +9,8 @@ type Event struct {
 	Dates       []string
 	Votes       map[string][]string
 	OrganizerID string
+	StartTime   string
+	EndTime     string
 }
 
 type User struct {
