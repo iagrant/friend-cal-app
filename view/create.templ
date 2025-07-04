@@ -29,6 +29,10 @@ templ CreatePage(user *data.User) {
 						<input type="text" id="end-time-picker" name="endTime" placeholder="Select end time..."/>
 					</div>
 				</div>
+				<div>
+					<label for="description">Description (optional)</label>
+					<textarea id="description" name="description" rows="3"></textarea>
+				</div>
 				<label for="date-picker">Suggested Dates 🗓️:</label>
 				<input type="text" id="date-picker" placeholder="Click to select dates..."/>
 				<input type="hidden" id="dates" name="dates"/>

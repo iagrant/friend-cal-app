@@ -15,6 +15,7 @@ type Event struct {
 	EndTime     string
 	Timezone    string
 	Location    string
+	Description string
 }
 
 type User struct {

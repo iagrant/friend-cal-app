@@ -32,6 +32,10 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 			{ utils.FormatTime(event.StartTime, formatPreference) } - { utils.FormatTime(event.EndTime, formatPreference) } 
 			({ event.Timezone })</p>
 		}
+		if event.Description != "" {
+			<p style="white-space: pre-wrap;">{ event.Description }</p>
+		}
+		<hr/>
 
 		for _, date := range event.Dates {
 			<div>
@@ -66,5 +70,14 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 			</select>
 			<button type="submit">Send Google Calendar Invites</button>
 		</form>
+		<hr/>
+
+		<div style="margin-top: 2rem; border: 1px solid #d9534f; padding: 1rem; border-radius: 5px;">
+			<h3 style="color: #d9534f;">Danger Zone</h3>
+			<p>Deleting an event is permanent and cannot be undone.</p>
+			<form action={ "/event/" + eventID + "/delete" } method="post" onsubmit="return confirm('Are you sure you want to permanently delete this event?');">
+				<button type="submit" class="button" style="background-color: #d9534f; border-color: #d9534f;">Delete This Event</button>
+			</form>
+		</div>
 	}
 }

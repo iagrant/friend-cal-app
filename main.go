@@ -65,6 +65,7 @@ func main() {
 	mux.HandleFunc("GET /my-events", handleMyEvents)
 	mux.HandleFunc("POST /event/{id}/finalize", handleFinalizeEvent)
 	mux.HandleFunc("GET /finalize-success", handleFinalizeSuccess)
+	mux.HandleFunc("POST /event/{id}/delete", handleDeleteEvent)
 
 	// 2. Register the file server using HandleFunc on a GET request.
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -252,6 +253,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	startTimeStr := r.FormValue("startTime")
 	endTimeStr := r.FormValue("endTime")
 	datesStr := r.FormValue("dates")
+	description := r.FormValue("description")
 	dates := strings.Split(datesStr, ",")
 	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
 		http.Error(w, "Please select at least one date.", http.StatusBadRequest)
@@ -274,6 +276,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		StartTime:   startTimeStr,
 		EndTime:     endTimeStr,
 		Timezone:    userTimezone,
+		Description: description,
 	}
 
 	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
@@ -422,7 +425,36 @@ func handleThanksPage(w http.ResponseWriter, r *http.Request) {
 	view.ThanksPage(user).Render(context.Background(), w)
 }
 
-// In main.go
+func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
+	// 1. Authentication: Check if a user is logged in.
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+
+	eventID := r.PathValue("id")
+
+	mu.Lock()
+	defer mu.Unlock()
+	event, ok := events[eventID]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 2. Authorization: Check if the logged-in user is the event organizer.
+	if event.OrganizerID != user.GoogleID {
+		http.Error(w, "Forbidden: You are not the organizer of this event.", http.StatusForbidden)
+		return
+	}
+
+	// 3. Delete the event from the map.
+	delete(events, eventID)
+
+	// 4. Redirect the user to their "My Events" page.
+	http.Redirect(w, r, "/my-events", http.StatusSeeOther)
+}
 
 func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 	// Get User and Event, and check authorization
@@ -465,11 +497,12 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not create calendar service: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
+	calendarDescription := strings.ReplaceAll(event.Description, "\n", "<br>")
 	// Construct the calendar event
 	calendarEvent := &calendar.Event{
-		Summary:  event.Name,
-		Location: event.Location,
+		Summary:     event.Name,
+		Location:    event.Location,
+		Description: calendarDescription,
 	}
 
 	// Handle timed vs. all-day events
@@ -521,7 +554,6 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/finalize-success", http.StatusSeeOther)
 }
 
-// In main.go
 func handleFinalizeSuccess(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	view.FinalizeSuccessPage(user).Render(context.Background(), w)

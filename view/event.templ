@@ -20,6 +20,11 @@ templ EventPage(event data.Event, eventID string, user *data.User, userVotes map
 				({ event.Timezone })
 			</p>
 		}
+
+		if event.Description != "" {
+			<p style="white-space: pre-wrap;">{ event.Description }</p>
+		}
+		<hr/>
 		// Check if the user is logged in
 		if user != nil {
 			<p>Please select the dates that work for you:</p>
