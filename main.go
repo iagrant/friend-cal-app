@@ -409,8 +409,6 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventID := r.PathValue("id")
-	mu.Lock()
-	defer mu.Unlock()
 	event, ok := events[eventID]
 	if !ok {
 		http.NotFound(w, r)
@@ -421,11 +419,32 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Forbidden: You are not the organizer of this event.", http.StatusForbidden)
 		return
 	}
+	mu.Lock()
+	totalVoters := make(map[string]bool)
+	for _, voterIDs := range event.Votes {
+		for _, voterID := range voterIDs {
+			totalVoters[voterID] = true
+		}
+	}
+	percentages := make(map[string]string)
+	totalVoterCount := len(totalVoters)
+	if totalVoterCount > 0 {
+		for date, voterIDs := range event.Votes {
+			voteCount := len(voterIDs)
+			percentage := (float64(voteCount) / float64(totalVoterCount)) * 100
+			percentages[date] = fmt.Sprintf("%.0f%%", percentage)
+		}
+	}
+	allUsersCopy := make(map[string]*data.User)
+	for k, v := range users {
+		allUsersCopy[k] = v
+	}
+	mu.Unlock()
 
 	formatPref := getFormatPreference(r)
 	organizerURL := fmt.Sprintf("/event/%s/organizer", eventID)
 	guestURL := fmt.Sprintf("/event/%s", eventID)
-	view.OrganizerPage(*event, eventID, organizerURL, guestURL, user, users, formatPref).Render(context.Background(), w)
+	view.OrganizerPage(*event, eventID, organizerURL, guestURL, user, allUsersCopy, formatPref, percentages).Render(context.Background(), w)
 }
 
 func handleThanksPage(w http.ResponseWriter, r *http.Request) {

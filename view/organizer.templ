@@ -4,10 +4,25 @@ import (
 	"fmt"
 	"friend-cal-app/data"
 	"friend-cal-app/utils"
+	"strings"
+	"strconv"
 )
 
-// The component now accepts organizerURL and guestURL.
-templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, allUsers map[string]*data.User, formatPreference string) {
+func getPercentageColor(p string) string {
+	num, _ := strconv.Atoi(strings.TrimSuffix(p, "%"))
+
+	if num >= 80 {
+		return "#28a745" //green
+	}
+	if num >= 70 {
+		return "#ffc107" //yellow
+	}
+	return "#dc3545" //red
+}
+
+
+templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, 
+					allUsers map[string]*data.User, formatPreference string, percentages map[string]string) {
 	@layout("Organizer: " + event.Name, user) {
 		<div style="display: flex; justify-content: space-between; align-items: center;">
 			<div style="display: flex; align-items: baseline; gap: 0.5rem;">
@@ -16,9 +31,7 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 			</div>
 			<a href={ "/event/" + eventID + "/edit" } class="button">Edit Event</a>
 		</div>
-		// This new section displays the shareable links.
 		<p>
-			// We add an id to the link so JavaScript can find it
 			<strong>Link to share:</strong>
 			<a id="guest-link" href={ guestURL }>{ guestURL }</a>
 		</p>
@@ -44,9 +57,15 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 			<div>
 				<h3>{ date }</h3>
 				if len(event.Votes[date]) > 0 {
-					<p>{ fmt.Sprintf("%d vote(s)", len(event.Votes[date])) }</p>
+					<p>
+						{ fmt.Sprintf("%d vote(s)", len(event.Votes[date])) }
+						if percentage, ok := percentages[date]; ok {
+							<span style={ "font-weight: bold; color: " + getPercentageColor(percentage) + ";" }>
+								({ percentage })
+							</span>
+						}
+					</p>
 					<ul>
-						// 2. Loop through voter IDs
 						for _, voterID := range event.Votes[date] {
 							if voter := allUsers[voterID]; voter != nil {
 								<li style="display: flex; align-items: center; margin-bottom: 0.5rem;">
@@ -57,7 +76,6 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 											referrerpolicy="no-referrer"	
 											/>
 									}
-									// Wrap the name and email in a div for better layout control
 									<div>
 										<div>{ voter.Name }</div>
 										<div style="font-size: 0.8rem; color: #777;">{ voter.Email }</div>
