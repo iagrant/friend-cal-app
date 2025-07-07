@@ -9,6 +9,10 @@ import (
 // The component now accepts organizerURL and guestURL.
 templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, allUsers map[string]*data.User, formatPreference string) {
 	@layout("Organizer: " + event.Name, user) {
+		<div style="display: flex; justify-content: space-between; align-items: center;">
+			<h2 style="margin: 0;">Organizer View</h2>
+			<a href={ "/event/" + eventID + "/edit" } class="button">Edit Event</a>
+		</div>
 		// This new section displays the shareable links.
 		<div style="display: flex; align-items: baseline; gap: 0.5rem;">
 			<h3 style="margin: 0;">Copy Link to Clipboard:</h3>

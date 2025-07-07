@@ -65,6 +65,8 @@ func main() {
 	mux.HandleFunc("GET /my-events", handleMyEvents)
 	mux.HandleFunc("POST /event/{id}/finalize", handleFinalizeEvent)
 	mux.HandleFunc("GET /finalize-success", handleFinalizeSuccess)
+	mux.HandleFunc("GET /event/{id}/edit", handleShowEditEventPage)
+	mux.HandleFunc("POST /event/{id}/edit", handleUpdateEvent)
 	mux.HandleFunc("POST /event/{id}/delete", handleDeleteEvent)
 
 	// 2. Register the file server using HandleFunc on a GET request.
@@ -565,4 +567,70 @@ func getFormatPreference(r *http.Request) string {
 		return "24h" // Default to 24-hour format
 	}
 	return cookie.Value
+}
+
+func handleShowEditEventPage(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+
+	eventID := r.PathValue("id")
+	mu.Lock()
+	defer mu.Unlock()
+	event, ok := events[eventID]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Authorization check
+	if event.OrganizerID != user.GoogleID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	view.EditEventPage(event, eventID, user).Render(context.Background(), w)
+}
+
+func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+
+	eventID := r.PathValue("id")
+	mu.Lock()
+	defer mu.Unlock()
+	event, ok := events[eventID]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Authorization check
+	if event.OrganizerID != user.GoogleID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	r.ParseForm()
+
+	// Update the event fields with the new values from the form.
+	event.Name = r.FormValue("eventName")
+	event.Location = r.FormValue("location")
+	event.Description = r.FormValue("description")
+	event.StartTime = r.FormValue("startTime")
+	event.EndTime = r.FormValue("endTime")
+
+	datesStr := r.FormValue("dates")
+	event.Dates = strings.Split(datesStr, "\n")
+	for i, d := range event.Dates {
+		event.Dates[i] = strings.TrimSpace(d)
+	}
+
+	// Redirect back to the organizer page.
+	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
 }
