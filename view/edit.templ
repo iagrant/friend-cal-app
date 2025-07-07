@@ -2,53 +2,55 @@ package view
 
 import (
 	"friend-cal-app/data"
-	"strings" // <-- Add this import
+	"strings"
 )
 
 templ EditEventPage(event *data.Event, eventID string, user *data.User) {
+	// The layout call passes 'nil' for the scripts, which is the third argument.
 	@layout("Edit Event", user) {
 		<h1>Edit Event</h1>
-		// The form will POST to an update endpoint
-		<form action={ "/event/" + eventID + "/edit" } method="post">
+		<form action={ "/event/" + eventID + "/edit" } method="post" onsubmit="return validateCreateForm()">
 
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 				<div>
 					<label for="eventName">Event Name:</label>
-					// Pre-populate with existing value
 					<input type="text" id="eventName" name="eventName" required value={ event.Name }/>
 				</div>
 				<div>
 					<label for="location">Location (optional)</label>
-					// Pre-populate with existing value
 					<input type="text" id="location" name="location" value={ event.Location }/>
 				</div>
 			</div>
 
 			<div>
 				<label for="description">Description (optional)</label>
-				// Pre-populate with existing value
 				<textarea id="description" name="description" rows="3">{ event.Description }</textarea>
 			</div>
 
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 				<div>
 					<label for="startTime">Start Time (optional)</label>
-					// Pre-populate with existing value
-					<input type="time" id="startTime" name="startTime" value={ event.StartTime }/>
+					<input type="text" id="start-time-picker" name="startTime" value={ event.StartTime } placeholder="Select start time..."/>
 				</div>
 				<div>
 					<label for="endTime">End Time (optional)</label>
-					// Pre-populate with existing value
-					<input type="time" id="endTime" name="endTime" value={ event.EndTime }/>
+					<input type="text" id="end-time-picker" name="endTime" value={ event.EndTime } placeholder="Select end time..."/>
 				</div>
 			</div>
 
 			<div>
-				<label for="dates">Suggested Dates (one per line):</label>
-				// Join the dates slice back into a string with newlines
-				<textarea id="dates" name="dates" rows="5" required>{ strings.Join(event.Dates, "\n") }</textarea>
+				<label for="date-picker">Suggested Dates 🗓️:</label>
+				<input type="text" id="date-picker" placeholder="Click to select dates..."/>
+				<input
+					type="hidden"
+					id="dates"
+					name="dates"
+					value={ strings.Join(event.Dates, ",") }
+					data-default-dates={ strings.Join(event.Dates, ",") }
+					required
+				/>
 			</div>
-			
+
 			<button type="submit">Save Changes</button>
 		</form>
 	}

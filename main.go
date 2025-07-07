@@ -626,7 +626,7 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	event.EndTime = r.FormValue("endTime")
 
 	datesStr := r.FormValue("dates")
-	event.Dates = strings.Split(datesStr, "\n")
+	event.Dates = strings.Split(datesStr, ",")
 	for i, d := range event.Dates {
 		event.Dates[i] = strings.TrimSpace(d)
 	}

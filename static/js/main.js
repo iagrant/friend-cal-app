@@ -1,37 +1,35 @@
-// Waits for the page to load before running any scripts.
 document.addEventListener('DOMContentLoaded', function () {
-   // --- Set Timezone Cookie ---
-  if (!getCookie('timezone')) {
-    const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    // Set the cookie to expire in one year.
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + 1); 
-    document.cookie = `timezone=${userTimezone};path=/;expires=${expiryDate.toUTCString()};SameSite=Lax`;
-  }
-  // --- Initialize Date Picker ---
-  const datePicker = document.querySelector('#date-picker');
-  if (datePicker) {
-    flatpickr('#date-picker', {
-      mode: 'multiple',
-      dateFormat: 'Y-m-d',
-      onChange: function (selectedDates, dateStr, instance) {
-        document.getElementById('dates').value = selectedDates
-          .map((date) => instance.formatDate(date, 'Y-m-d'))
-          .join(',');
-      },
+  // --- Consolidated Date Picker Initialization ---
+  const datePickerInput = document.querySelector('#date-picker');
+  if (datePickerInput) {
+    const hiddenDatesInput = document.getElementById('dates');
+    const defaultDatesAttr = hiddenDatesInput.getAttribute('data-default-dates');
+    
+    let defaultDates = [];
+    if (defaultDatesAttr && defaultDatesAttr.trim() !== '') {
+      defaultDates = defaultDatesAttr.split(',');
+    }
+
+    hiddenDatesInput.value = defaultDates.join(',');
+
+    flatpickr(datePickerInput, {
+      mode: "multiple",
+      dateFormat: "Y-m-d",
+      defaultDate: defaultDates,
+      onChange: function(selectedDates, dateStr, instance) {
+        hiddenDatesInput.value = selectedDates.map(date => instance.formatDate(date, "Y-m-d")).join(",");
+      }
     });
   }
 
   // --- Initialize Time Pickers ---
   const timeFormatIs12h = getCookie('time_format') === '12h';
-
-  // A reusable config for our time pickers
   const timePickerConfig = {
     enableTime: true,
     noCalendar: true,
-    dateFormat: 'H:i', // The format sent to the server (hidden input)
-    altInput: true, // <-- ADD THIS: Creates a user-visible input
-    altFormat: timeFormatIs12h ? 'h:i K' : 'H:i', // <-- ADD THIS: Format for the visible input
+    dateFormat: 'H:i',
+    altInput: true,
+    altFormat: timeFormatIs12h ? 'h:i K' : 'H:i',
     time_24hr: !timeFormatIs12h,
   };
 
@@ -39,7 +37,6 @@ document.addEventListener('DOMContentLoaded', function () {
   if (startTimePicker) {
     flatpickr(startTimePicker, timePickerConfig);
   }
-
   const endTimePicker = document.querySelector('#end-time-picker');
   if (endTimePicker) {
     flatpickr(endTimePicker, timePickerConfig);

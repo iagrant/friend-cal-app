@@ -10,14 +10,13 @@ import (
 templ OrganizerPage(event data.Event, eventID string, organizerURL string, guestURL string, user *data.User, allUsers map[string]*data.User, formatPreference string) {
 	@layout("Organizer: " + event.Name, user) {
 		<div style="display: flex; justify-content: space-between; align-items: center;">
-			<h2 style="margin: 0;">Organizer View</h2>
+			<div style="display: flex; align-items: baseline; gap: 0.5rem;">
+				<h3 style="margin: 0;">Copy Link to Clipboard:</h3>
+				<button id="copy-btn" onclick="copyGuestLink()" title="Copy link to clipboard" style="background:none; border:none; font-size:1.5rem; cursor:pointer; padding:0;">📋</button>
+			</div>
 			<a href={ "/event/" + eventID + "/edit" } class="button">Edit Event</a>
 		</div>
 		// This new section displays the shareable links.
-		<div style="display: flex; align-items: baseline; gap: 0.5rem;">
-			<h3 style="margin: 0;">Copy Link to Clipboard:</h3>
-			<button id="copy-btn" onclick="copyGuestLink()" title="Copy link to clipboard" style="background:none; border:none; font-size:1.5rem; cursor:pointer; padding:0;">📋</button>
-		</div>
 		<p>
 			// We add an id to the link so JavaScript can find it
 			<strong>Link to share:</strong>
