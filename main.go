@@ -172,11 +172,16 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the user's profile information.
-	person, err := peopleService.People.Get("people/me").PersonFields("names,emailAddresses").Do()
+	person, err := peopleService.People.Get("people/me").PersonFields("names,emailAddresses,photos").Do()
 	if err != nil {
 		fmt.Printf("could not get person: %s\n", err.Error())
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
+	}
+
+	photoURL := ""
+	if len(person.Photos) > 0 && person.Photos[0].Url != "" {
+		photoURL = person.Photos[0].Url
 	}
 
 	// Extract user info and store it.
@@ -186,6 +191,7 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		GoogleID:    googleID,
 		Name:        person.Names[0].DisplayName,
 		Email:       person.EmailAddresses[0].Value,
+		PhotoURL:    photoURL,
 		AccessToken: token,
 	}
 	users[googleID] = user

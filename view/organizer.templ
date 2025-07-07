@@ -48,9 +48,21 @@ templ OrganizerPage(event data.Event, eventID string, organizerURL string, guest
 					<ul>
 						// 2. Loop through voter IDs
 						for _, voterID := range event.Votes[date] {
-							// 3. Look up the user's name from the map
 							if voter := allUsers[voterID]; voter != nil {
-								<li>{ voter.Name } ({ voter.Email })</li>
+								<li style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+									if voter.PhotoURL != "" {
+										<img 
+											src={ voter.PhotoURL } 
+											style="width: 50px; height: 50px; border-radius: 50%; margin-right: 8px;"
+											referrerpolicy="no-referrer"	
+											/>
+									}
+									// Wrap the name and email in a div for better layout control
+									<div>
+										<div>{ voter.Name }</div>
+										<div style="font-size: 0.8rem; color: #777;">{ voter.Email }</div>
+									</div>
+								</li>
 							}
 						}
 					</ul>

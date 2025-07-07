@@ -22,5 +22,6 @@ type User struct {
 	GoogleID    string
 	Name        string
 	Email       string
+	PhotoURL    string
 	AccessToken *oauth2.Token
 }
