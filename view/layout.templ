@@ -30,6 +30,17 @@ templ layout(title string, user *data.User) {
 
 			<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 			<script src="/static/js/main.js"></script>
+			<script>
+				// Check for error message in URL and display as alert
+				const urlParams = new URLSearchParams(window.location.search);
+				const errorMessage = urlParams.get('error');
+				if (errorMessage) {
+					alert(decodeURIComponent(errorMessage));
+					// Optionally, remove the error parameter from the URL
+					urlParams.delete('error');
+					window.history.replaceState({}, document.title, window.location.pathname + urlParams.toString());
+				}
+			</script>
 		</body>
 	</html>
 }

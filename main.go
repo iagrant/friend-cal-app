@@ -15,7 +15,11 @@ import (
 	"os"
 	"time"
 
+	"friend-cal-app/db"
+
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
@@ -27,7 +31,7 @@ import (
 
 var (
 	googleOauthConfig *oauth2.Config
-	events            = make(map[string]*data.Event)
+	dbQueries         *db.Queries
 	mu                sync.Mutex
 	// sessions maps a random session ID (the cookie value) to a Google user ID.
 	sessions = make(map[string]string)
@@ -36,6 +40,16 @@ var (
 )
 
 func main() {
+	// --- DB Conn ---
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("Unable to connect to database: %v\n", err)
+	}
+	defer conn.Close(ctx)
+	dbQueries = db.New(conn)
+	// --- End DB Conn ---
+
 	// --- OAUTH SETUP ---
 	googleOauthConfig = &oauth2.Config{
 		RedirectURL:  "http://localhost:8080/auth/google/callback",
@@ -55,19 +69,19 @@ func main() {
 	// 1. Register all your specific page handlers first.
 	mux.HandleFunc("GET /", handleShowCreatePage)
 	mux.HandleFunc("POST /create", handleCreateEvent)
-	mux.HandleFunc("GET /event/{id}", handleShowEventPage)
-	mux.HandleFunc("POST /event/{id}/vote", handleVote)
-	mux.HandleFunc("GET /event/{id}/organizer", handleShowOrganizerPage)
+	mux.HandleFunc("GET /event/{uuid}", handleShowEventPage)
+	mux.HandleFunc("POST /event/{uuid}/vote", handleVote)
+	mux.HandleFunc("GET /event/{uuid}/organizer", handleShowOrganizerPage)
 	mux.HandleFunc("GET /thanks", handleThanksPage)
 	mux.HandleFunc("GET /auth/google/login", handleGoogleLogin)
 	mux.HandleFunc("GET /auth/google/callback", handleGoogleCallback)
 	mux.HandleFunc("GET /auth/google/logout", handleLogout)
 	mux.HandleFunc("GET /my-events", handleMyEvents)
-	mux.HandleFunc("POST /event/{id}/finalize", handleFinalizeEvent)
+	mux.HandleFunc("POST /event/{uuid}/finalize", handleFinalizeEvent)
 	mux.HandleFunc("GET /finalize-success", handleFinalizeSuccess)
-	mux.HandleFunc("GET /event/{id}/edit", handleShowEditEventPage)
-	mux.HandleFunc("POST /event/{id}/edit", handleUpdateEvent)
-	mux.HandleFunc("POST /event/{id}/delete", handleDeleteEvent)
+	mux.HandleFunc("GET /event/{uuid}/edit", handleShowEditEventPage)
+	mux.HandleFunc("POST /event/{uuid}/edit", handleUpdateEvent)
+	mux.HandleFunc("POST /event/{uuid}/delete", handleDeleteEvent)
 
 	// 2. Register the file server using HandleFunc on a GET request.
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -83,7 +97,6 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	state := base64.URLEncoding.EncodeToString(b)
 	redirectURL := r.URL.Query().Get("redirect_url")
 	if redirectURL != "" {
-		// If it exists, store it in a temporary cookie.
 		http.SetCookie(w, &http.Cookie{
 			Name:     "login_redirect_url",
 			Value:    redirectURL,
@@ -96,7 +109,7 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
-		Expires:  time.Now().Add(10 * time.Minute), // Cookie expires in 10 minutes
+		Expires:  time.Now().Add(10 * time.Minute),
 		HttpOnly: true,
 	})
 
@@ -105,12 +118,11 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
-	// Clear the session cookie.
 	http.SetCookie(w, &http.Cookie{
 		Name:   "session_id",
 		Value:  "",
 		Path:   "/",
-		MaxAge: -1, // Tells the browser to delete the cookie
+		MaxAge: -1,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -264,30 +276,62 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	description := r.FormValue("description")
 	dates := strings.Split(datesStr, ",")
 	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
-		http.Error(w, "Please select at least one date.", http.StatusBadRequest)
+		http.Redirect(w, r, "/?error=" + "Please+select+at+least+one+date.", http.StatusSeeOther)
 		return
 	}
 	for i, d := range dates {
 		dates[i] = strings.TrimSpace(d)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	eventID := uuid.New().String()
-	events[eventID] = &data.Event{
-		Name:        eventName,
-		Location:    location,
-		Dates:       dates,
-		Votes:       make(map[string][]string),
-		OrganizerID: user.GoogleID,
-		StartTime:   startTimeStr,
-		EndTime:     endTimeStr,
-		Timezone:    userTimezone,
-		Description: description,
+	// Validate start and end times if both are provided
+	if startTimeStr != "" && endTimeStr != "" {
+		// Assuming time format is HH:MM
+		start, err := time.Parse("15:04", startTimeStr)
+		if err != nil {
+			http.Redirect(w, r, "/?error=" + "Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			return
+		}
+		end, err := time.Parse("15:04", endTimeStr)
+		if err != nil {
+			http.Redirect(w, r, "/?error=" + "Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			return
+		}
+		if end.Before(start) {
+			http.Redirect(w, r, "/?error=" + "End+time+cannot+be+before+start+time.", http.StatusSeeOther)
+			return
+		}
 	}
 
-	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
+	params := db.CreateEventParams{
+		Name:        eventName,
+		Location:    pgtype.Text{String: location, Valid: location != ""},
+		Description: pgtype.Text{String: description, Valid: description != ""},
+		OrganizerID: user.GoogleID,
+		Timezone:    pgtype.Text{String: userTimezone, Valid: userTimezone != ""},
+		StartTime:   pgtype.Text{String: startTimeStr, Valid: startTimeStr != ""},
+		EndTime:     pgtype.Text{String: endTimeStr, Valid: endTimeStr != ""},
+		Dates:       dates,
+	}
+	event, err := dbQueries.CreateEvent(context.Background(), params)
+	log.Printf("CreateEvent params: %+v\n", params)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "Failed to create event", http.StatusInternalServerError)
+		return
+	}
+
+	// Automatically add the organizer as an attendee
+	_, err = dbQueries.CreateAttendee(context.Background(), db.CreateAttendeeParams{
+		EventID: event.ID,
+		Name:    user.Name,
+		Email:   user.Email,
+	})
+	if err != nil {
+		log.Printf("Failed to add organizer as attendee: %v\n", err)
+		// This is not a critical error, so we don't return, but log it.
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/event/%s/organizer", event.Uuid), http.StatusSeeOther)
 }
 
 func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
@@ -295,32 +339,57 @@ func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
 	formatPref := getFormatPreference(r)
 
 	user := getUser(r)
-	eventID := r.PathValue("id")
-
-	mu.Lock()
-	event, ok := events[eventID]
-	mu.Unlock() // Unlock after reading from shared maps
-
-	if !ok {
-		http.NotFound(w, r)
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
+	}
+
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	dbVotes, err := dbQueries.GetVotesByEvent(context.Background(), event.ID)
+	if err != nil {
+		http.Error(w, "Failed to get votes", http.StatusInternalServerError)
+		return
+	}
+
+	votes := make(map[string][]string)
+	for _, vote := range dbVotes {
+		votes[vote.Date] = append(votes[vote.Date], vote.UserID)
+	}
+
+	dataEvent := data.Event{
+		Name:        event.Name,
+		Dates:       event.Dates,
+		Votes:       votes,
+		OrganizerID: event.OrganizerID,
+		StartTime:   event.StartTime.String,
+		EndTime:     event.EndTime.String,
+		Timezone:    event.Timezone.String,
+		Location:    event.Location.String,
+		Description: event.Description.String,
 	}
 
 	userVotes := make(map[string]bool)
 	if user != nil {
-		mu.Lock()
-		for date, voterIDs := range event.Votes {
-			for _, voterID := range voterIDs {
-				if voterID == user.GoogleID {
-					userVotes[date] = true
-				}
+		for _, vote := range dbVotes {
+			if vote.UserID == user.GoogleID {
+				userVotes[vote.Date] = true
 			}
 		}
-		mu.Unlock()
 	}
 
 	// Pass all necessary data to the template
-	view.EventPage(*event, eventID, user, userVotes, r.URL.String(), formatPref).Render(context.Background(), w)
+	view.EventPage(dataEvent, eventUUIDStr, user, userVotes, r.URL.String(), formatPref, event.OrganizerID == user.GoogleID).Render(context.Background(), w)
 }
 
 func handleMyEvents(w http.ResponseWriter, r *http.Request) {
@@ -330,33 +399,39 @@ func handleMyEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	organized := make(map[string]*data.Event)
-	attending := make(map[string]*data.Event)
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	for id, event := range events {
-
-		// Check if the user organized this event
-		if event.OrganizerID == user.GoogleID {
-			organized[id] = event
-			//continue //this continue is being removed so events you organize show up in attending list. not sure if im a fan of that tho...
-		}
-
-	AttendLoop:
-		// Now, always check for attendance, even if they are the organizer.
-		for _, voterIDs := range event.Votes {
-			for _, voterID := range voterIDs {
-				if voterID == user.GoogleID {
-					attending[id] = event
-					break AttendLoop // Found user, stop checking this event
-				}
-			}
-		}
+	organizedEvents, err := dbQueries.GetEventsByOrganizer(context.Background(), user.GoogleID)
+	if err != nil {
+		http.Error(w, "Failed to get organized events", http.StatusInternalServerError)
+		return
 	}
 
-	view.MyEventsPage(user, organized, attending).Render(context.Background(), w)
+	attendedEvents, err := dbQueries.GetEventsByAttendee(context.Background(), user.GoogleID)
+	if err != nil {
+		http.Error(w, "Failed to get attended events", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert db.Event to data.Event for organized events
+	var organizedDataEvents []data.Event
+	for _, event := range organizedEvents {
+		organizedDataEvents = append(organizedDataEvents, data.Event{
+			Name:        event.Name,
+			Uuid:        event.Uuid.String(),
+			OrganizerID: event.OrganizerID,
+		})
+	}
+
+	// Convert db.Event to data.Event for attended events
+	var attendedDataEvents []data.Event
+	for _, event := range attendedEvents {
+		attendedDataEvents = append(attendedDataEvents, data.Event{
+			Name:        event.Name,
+			Uuid:        event.Uuid.String(),
+			OrganizerID: event.OrganizerID,
+		})
+	}
+
+	view.MyEventsPage(user, organizedDataEvents, attendedDataEvents).Render(context.Background(), w)
 }
 
 func handleVote(w http.ResponseWriter, r *http.Request) {
@@ -365,37 +440,51 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
 		return
 	}
-	eventID := r.PathValue("id")
-	r.ParseForm()
-	votedDates := r.Form["dates"]
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	event, ok := events[eventID]
-	if !ok {
-		http.NotFound(w, r)
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	r.ParseForm()
+	votedDates := r.Form["dates"]
+
 	// First, remove any previous votes from this user to allow them to change their vote.
-	for date, voterIDs := range event.Votes {
-		newVoterIDs := []string{}
-		for _, voterID := range voterIDs {
-			if voterID != user.GoogleID {
-				newVoterIDs = append(newVoterIDs, voterID)
-			}
-		}
-		event.Votes[date] = newVoterIDs
+	err = dbQueries.DeleteVotesByUser(context.Background(), db.DeleteVotesByUserParams{
+		EventID: event.ID,
+		UserID:  user.GoogleID,
+	})
+	if err != nil {
+		http.Error(w, "Failed to update votes", http.StatusInternalServerError)
+		return
 	}
 
-	if len(votedDates) > 0 {
-		for _, date := range votedDates {
-			event.Votes[date] = append(event.Votes[date], user.GoogleID)
+	// if len(votedDates) > 0 {
+	for _, date := range votedDates {
+		_, err := dbQueries.CreateVote(context.Background(), db.CreateVoteParams{
+			EventID: event.ID,
+			UserID:  user.GoogleID,
+			Date:    date,
+		})
+		if err != nil {
+			http.Error(w, "Failed to save vote", http.StatusInternalServerError)
+			return
 		}
 	}
+	// }
 
-	// Instead of rendering a component, redirect to the new page.
+	// // Instead of rendering a component, redirect to the new page.
 	http.Redirect(w, r, "/thanks", http.StatusSeeOther)
 }
 
@@ -408,20 +497,55 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventID := r.PathValue("id")
-	event, ok := events[eventID]
-	if !ok {
-		http.NotFound(w, r)
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
+
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	if event.OrganizerID != user.GoogleID {
 		// If they aren't the organizer, deny access.
 		http.Error(w, "Forbidden: You are not the organizer of this event.", http.StatusForbidden)
 		return
 	}
-	mu.Lock()
+
+	dbVotes, err := dbQueries.GetVotesByEvent(context.Background(), event.ID)
+	if err != nil {
+		http.Error(w, "Failed to get votes", http.StatusInternalServerError)
+		return
+	}
+
+	votes := make(map[string][]string)
+	for _, vote := range dbVotes {
+		votes[vote.Date] = append(votes[vote.Date], vote.UserID)
+	}
+
+	dataEvent := data.Event{
+		Name:        event.Name,
+		Dates:       event.Dates,
+		Votes:       votes,
+		OrganizerID: event.OrganizerID,
+		StartTime:   event.StartTime.String,
+		EndTime:     event.EndTime.String,
+		Timezone:    event.Timezone.String,
+		Location:    event.Location.String,
+		Description: event.Description.String,
+	}
+
+	// Calculate percentages
 	totalVoters := make(map[string]bool)
-	for _, voterIDs := range event.Votes {
+	for _, voterIDs := range dataEvent.Votes {
 		for _, voterID := range voterIDs {
 			totalVoters[voterID] = true
 		}
@@ -429,12 +553,14 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 	percentages := make(map[string]string)
 	totalVoterCount := len(totalVoters)
 	if totalVoterCount > 0 {
-		for date, voterIDs := range event.Votes {
+		for date, voterIDs := range dataEvent.Votes {
 			voteCount := len(voterIDs)
 			percentage := (float64(voteCount) / float64(totalVoterCount)) * 100
 			percentages[date] = fmt.Sprintf("%.0f%%", percentage)
 		}
 	}
+
+	mu.Lock()
 	allUsersCopy := make(map[string]*data.User)
 	for k, v := range users {
 		allUsersCopy[k] = v
@@ -442,9 +568,7 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 	mu.Unlock()
 
 	formatPref := getFormatPreference(r)
-	organizerURL := fmt.Sprintf("/event/%s/organizer", eventID)
-	guestURL := fmt.Sprintf("/event/%s", eventID)
-	view.OrganizerPage(*event, eventID, organizerURL, guestURL, user, allUsersCopy, formatPref, percentages).Render(context.Background(), w)
+	view.OrganizerPage(dataEvent, eventUUIDStr, r.URL.String(), "/event/"+eventUUIDStr, user, allUsersCopy, formatPref, percentages).Render(context.Background(), w)
 }
 
 func handleThanksPage(w http.ResponseWriter, r *http.Request) {
@@ -460,13 +584,22 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventID := r.PathValue("id")
+	// Get event UUID from path
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
+		return
+	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	event, ok := events[eventID]
-	if !ok {
-		http.NotFound(w, r)
+	// Get event from DB
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -476,8 +609,13 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Delete the event from the map.
-	delete(events, eventID)
+	// 3. Delete the event from the database.
+	err = dbQueries.DeleteEvent(context.Background(), event.ID)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "Failed to delete event", http.StatusInternalServerError)
+		return
+	}
 
 	// 4. Redirect the user to their "My Events" page.
 	http.Redirect(w, r, "/my-events", http.StatusSeeOther)
@@ -490,29 +628,47 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
 		return
 	}
-	eventID := r.PathValue("id")
-	mu.Lock()
-	event, ok := events[eventID]
-	mu.Unlock()
-	if !ok || event.OrganizerID != user.GoogleID {
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
+		return
+	}
+
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if event.OrganizerID != user.GoogleID {
 		http.Error(w, "Event not found or you are not the organizer", http.StatusForbidden)
 		return
 	}
+
 	r.ParseForm()
 	finalDate := r.FormValue("finalDate")
 
 	// Gather attendees
+	dbVotes, err := dbQueries.GetVotesByEvent(context.Background(), event.ID)
+	if err != nil {
+		http.Error(w, "Failed to get votes", http.StatusInternalServerError)
+		return
+	}
+
 	attendeeEmails := []string{}
 	uniqueVoterIDs := make(map[string]bool)
 	mu.Lock()
-	for _, voterIDs := range event.Votes {
-		for _, voterID := range voterIDs {
-			if !uniqueVoterIDs[voterID] {
-				if voter := users[voterID]; voter != nil {
-					attendeeEmails = append(attendeeEmails, voter.Email)
-				}
-				uniqueVoterIDs[voterID] = true
+	for _, vote := range dbVotes {
+		if !uniqueVoterIDs[vote.UserID] {
+			if voter := users[vote.UserID]; voter != nil {
+				attendeeEmails = append(attendeeEmails, voter.Email)
 			}
+			uniqueVoterIDs[vote.UserID] = true
 		}
 	}
 	mu.Unlock()
@@ -524,26 +680,26 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not create calendar service: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	calendarDescription := strings.ReplaceAll(event.Description, "\n", "<br>")
+	calendarDescription := strings.ReplaceAll(event.Description.String, "\n", "<br>")
 	// Construct the calendar event
 	calendarEvent := &calendar.Event{
 		Summary:     event.Name,
-		Location:    event.Location,
+		Location:    event.Location.String,
 		Description: calendarDescription,
 	}
 
 	// Handle timed vs. all-day events
-	if event.StartTime != "" && event.EndTime != "" {
+	if event.StartTime.String != "" && event.EndTime.String != "" {
 		// Use the timezone stored with the event.
-		loc, err := time.LoadLocation(event.Timezone)
+		loc, err := time.LoadLocation(event.Timezone.String)
 		if err != nil {
 			loc, _ = time.LoadLocation("UTC")
-			fmt.Printf("Invalid timezone '%s', defaulting to UTC. Error: %v\n", event.Timezone, err)
+			fmt.Printf("Invalid timezone '%s', defaulting to UTC. Error: %v\n", event.Timezone.String, err)
 		}
 
 		// Combine date and time strings.
-		startStr := fmt.Sprintf("%sT%s:00", finalDate, event.StartTime)
-		endStr := fmt.Sprintf("%sT%s:00", finalDate, event.EndTime)
+		startStr := fmt.Sprintf("%sT%s:00", finalDate, event.StartTime.String)
+		endStr := fmt.Sprintf("%sT%s:00", finalDate, event.EndTime.String)
 
 		// Parse the full strings in the event's original timezone.
 		layout := "2006-01-02T15:04:05"
@@ -601,12 +757,20 @@ func handleShowEditEventPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventID := r.PathValue("id")
-	mu.Lock()
-	defer mu.Unlock()
-	event, ok := events[eventID]
-	if !ok {
-		http.NotFound(w, r)
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
+		return
+	}
+
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -616,7 +780,19 @@ func handleShowEditEventPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	view.EditEventPage(event, eventID, user).Render(context.Background(), w)
+	dataEvent := data.Event{
+		Name:        event.Name,
+		Dates:       event.Dates,
+		Votes:       make(map[string][]string), // Votes are not needed for the edit page
+		OrganizerID: event.OrganizerID,
+		StartTime:   event.StartTime.String,
+		EndTime:     event.EndTime.String,
+		Timezone:    event.Timezone.String,
+		Location:    event.Location.String,
+		Description: event.Description.String,
+	}
+
+	view.EditEventPage(&dataEvent, eventUUIDStr, user).Render(context.Background(), w)
 }
 
 func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
@@ -626,16 +802,23 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventID := r.PathValue("id")
-	mu.Lock()
-	defer mu.Unlock()
-	event, ok := events[eventID]
-	if !ok {
-		http.NotFound(w, r)
+	eventUUIDStr := r.PathValue("uuid")
+	eventUUID, err := uuid.Parse(eventUUIDStr)
+	if err != nil {
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
 		return
 	}
 
 	// Authorization check
+	event, err := dbQueries.GetEventByUUID(context.Background(), pgtype.UUID{Bytes: eventUUID, Valid: true})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "Failed to get event", http.StatusInternalServerError)
+		}
+		return
+	}
 	if event.OrganizerID != user.GoogleID {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -643,19 +826,62 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
 
-	// Update the event fields with the new values from the form.
-	event.Name = r.FormValue("eventName")
-	event.Location = r.FormValue("location")
-	event.Description = r.FormValue("description")
-	event.StartTime = r.FormValue("startTime")
-	event.EndTime = r.FormValue("endTime")
+	// Get the timezone from the cookie.
+	tzCookie, _ := r.Cookie("timezone")
+	userTimezone := "UTC" // Default to UTC if no cookie
+	if tzCookie != nil {
+		userTimezone = tzCookie.Value
+	}
 
 	datesStr := r.FormValue("dates")
-	event.Dates = strings.Split(datesStr, ",")
-	for i, d := range event.Dates {
-		event.Dates[i] = strings.TrimSpace(d)
+	dates := strings.Split(datesStr, ",")
+	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
+		http.Redirect(w, r, fmt.Sprintf("/event/%s/edit?error=%s", eventUUIDStr, "Please+select+at+least+one+date."), http.StatusSeeOther)
+		return
+	}
+	for i, d := range dates {
+		dates[i] = strings.TrimSpace(d)
+	}
+
+	startTimeStr := r.FormValue("startTime")
+	endTimeStr := r.FormValue("endTime")
+
+	// Validate start and end times if both are provided
+	if startTimeStr != "" && endTimeStr != "" {
+		// Assuming time format is HH:MM
+		start, err := time.Parse("15:04", startTimeStr)
+		if err != nil {
+			http.Redirect(w, r, fmt.Sprintf("/event/%s/edit?error=%s", eventUUIDStr, "Invalid+start+time+format.+Please+use+HH:MM."), http.StatusSeeOther)
+			return
+		}
+		end, err := time.Parse("15:04", endTimeStr)
+		if err != nil {
+			http.Redirect(w, r, fmt.Sprintf("/event/%s/edit?error=%s", eventUUIDStr, "Invalid+end+time+format.+Please+use+HH:MM."), http.StatusSeeOther)
+			return
+		}
+		if end.Before(start) {
+			http.Redirect(w, r, fmt.Sprintf("/event/%s/edit?error=%s", eventUUIDStr, "End+time+cannot+be+before+start+time."), http.StatusSeeOther)
+			return
+		}
+	}
+
+	params := db.UpdateEventParams{
+		Uuid:        pgtype.UUID{Bytes: eventUUID, Valid: true},
+		Name:        r.FormValue("eventName"),
+		Location:    pgtype.Text{String: r.FormValue("location"), Valid: r.FormValue("location") != ""},
+		Description: pgtype.Text{String: r.FormValue("description"), Valid: r.FormValue("description") != ""},
+		Timezone:    pgtype.Text{String: userTimezone, Valid: userTimezone != ""},
+		StartTime:   pgtype.Text{String: startTimeStr, Valid: startTimeStr != ""},
+		EndTime:     pgtype.Text{String: endTimeStr, Valid: endTimeStr != ""},
+		Dates:       dates,
+	}
+
+	_, err = dbQueries.UpdateEvent(context.Background(), params)
+	if err != nil {
+		http.Error(w, "Failed to update event", http.StatusInternalServerError)
+		return
 	}
 
 	// Redirect back to the organizer page.
-	http.Redirect(w, r, "/event/"+eventID+"/organizer", http.StatusSeeOther)
+	http.Redirect(w, r, "/event/"+eventUUIDStr+"/organizer", http.StatusSeeOther)
 }

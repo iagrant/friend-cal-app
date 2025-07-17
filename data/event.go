@@ -8,6 +8,7 @@ import (
 // Note that all fields start with a capital letter, making them public.
 type Event struct {
 	Name        string
+	Uuid        string
 	Dates       []string
 	Votes       map[string][]string
 	OrganizerID string

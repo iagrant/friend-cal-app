@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-templ EditEventPage(event *data.Event, eventID string, user *data.User) {
+templ EditEventPage(event *data.Event, eventUUID string, user *data.User) {
 	// The layout call passes 'nil' for the scripts, which is the third argument.
 	@layout("Edit Event", user) {
 		<h1>Edit Event</h1>
-		<form action={ "/event/" + eventID + "/edit" } method="post" onsubmit="return validateCreateForm()">
+		<form action={ "/event/" + eventUUID + "/edit" } method="post" onsubmit="return validateCreateForm()">
 
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 				<div>

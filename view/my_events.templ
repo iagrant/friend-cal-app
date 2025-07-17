@@ -2,15 +2,15 @@ package view
 
 import "friend-cal-app/data"
 
-templ MyEventsPage(user *data.User, organizedEvents map[string]*data.Event, attendedEvents map[string]*data.Event) {
+templ MyEventsPage(user *data.User, organizedEvents []data.Event, attendedEvents []data.Event) {
 	@layout("My Events", user) {
 		<h1>My Events</h1>
 
 		<h2>Organized by Me</h2>
 		if len(organizedEvents) > 0 {
 			<ul>
-				for id, event := range organizedEvents {
-					<li><a href={ "/event/" + id + "/organizer" }>{ event.Name }</a></li>
+				for _, event := range organizedEvents {
+					<li><a href={ templ.URL("/event/" + event.Uuid + "/organizer") }>{ event.Name }</a></li>
 				}
 			</ul>
 		} else {
@@ -22,8 +22,8 @@ templ MyEventsPage(user *data.User, organizedEvents map[string]*data.Event, atte
 		<h2>Attending</h2>
 		if len(attendedEvents) > 0 {
 			<ul>
-				for id, event := range attendedEvents {
-					<li><a href={ "/event/" + id }>{ event.Name }</a></li>
+				for _, event := range attendedEvents {
+					<li><a href={ templ.URL("/event/" + event.Uuid) }>{ event.Name }</a></li>
 				}
 			</ul>
 		} else {
