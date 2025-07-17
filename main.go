@@ -276,7 +276,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	description := r.FormValue("description")
 	dates := strings.Split(datesStr, ",")
 	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
-		http.Redirect(w, r, "/?error=" + "Please+select+at+least+one+date.", http.StatusSeeOther)
+		http.Redirect(w, r, "/?error="+"Please+select+at+least+one+date.", http.StatusSeeOther)
 		return
 	}
 	for i, d := range dates {
@@ -288,16 +288,16 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		// Assuming time format is HH:MM
 		start, err := time.Parse("15:04", startTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error=" + "Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		end, err := time.Parse("15:04", endTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error=" + "Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		if end.Before(start) {
-			http.Redirect(w, r, "/?error=" + "End+time+cannot+be+before+start+time.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"End+time+cannot+be+before+start+time.", http.StatusSeeOther)
 			return
 		}
 	}
@@ -323,6 +323,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	// Automatically add the organizer as an attendee
 	_, err = dbQueries.CreateAttendee(context.Background(), db.CreateAttendeeParams{
 		EventID: event.ID,
+		UserID:  user.GoogleID,
 		Name:    user.Name,
 		Email:   user.Email,
 	})
@@ -386,6 +387,47 @@ func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
 				userVotes[vote.Date] = true
 			}
 		}
+	}
+
+	// Fetch attendees from the database
+	dbAttendees, err := dbQueries.GetAttendees(context.Background(), event.ID)
+	if err != nil {
+		log.Printf("Failed to get attendees: %v\n", err)
+		http.Error(w, "Failed to get attendees", http.StatusInternalServerError)
+		return
+	}
+
+	// Create a map of attendees for easy lookup in the template
+	attendeeMap := make(map[string]*data.User)
+	mu.Lock()
+	for _, attendee := range dbAttendees {
+		if u, ok := users[attendee.UserID]; ok {
+			attendeeMap[attendee.UserID] = u
+		} else {
+			// If user not in memory, create a basic user object
+			attendeeMap[attendee.UserID] = &data.User{
+				GoogleID: attendee.UserID,
+				Name:     attendee.Name,
+				Email:    attendee.Email,
+			}
+		}
+	}
+	mu.Unlock()
+
+	// Ensure organizer is in the attendee map
+	if _, ok := attendeeMap[event.OrganizerID]; !ok {
+		mu.Lock()
+		if u, ok := users[event.OrganizerID]; ok {
+			attendeeMap[event.OrganizerID] = u
+		} else {
+			// Fallback if organizer not in memory (shouldn't happen if logged in)
+			attendeeMap[event.OrganizerID] = &data.User{
+				GoogleID: event.OrganizerID,
+				Name:     "Organizer", // Placeholder name
+				Email:    "",
+			}
+		}
+		mu.Unlock()
 	}
 
 	// Pass all necessary data to the template
@@ -467,6 +509,29 @@ func handleVote(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		http.Error(w, "Failed to update votes", http.StatusInternalServerError)
+		return
+	}
+
+	// Add user to attendees table if not already there
+	_, err = dbQueries.GetAttendeeByEventAndUser(context.Background(), db.GetAttendeeByEventAndUserParams{
+		EventID: event.ID,
+		UserID:  user.GoogleID,
+	})
+	if err == pgx.ErrNoRows {
+		// Attendee does not exist, create them
+		_, err = dbQueries.CreateAttendee(context.Background(), db.CreateAttendeeParams{
+			EventID: event.ID,
+			UserID:  user.GoogleID,
+			Name:    user.Name,
+			Email:   user.Email,
+		})
+		if err != nil {
+			log.Printf("Failed to add voter as attendee: %v\n", err)
+			// This is not a critical error, so we don't return, but log it.
+		}
+	} else if err != nil {
+		log.Printf("Failed to check if voter is attendee: %v\n", err)
+		http.Error(w, "Failed to process vote", http.StatusInternalServerError)
 		return
 	}
 
@@ -560,15 +625,49 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fetch attendees from the database
+	dbAttendees, err := dbQueries.GetAttendees(context.Background(), event.ID)
+	if err != nil {
+		log.Printf("Failed to get attendees: %v\n", err)
+		http.Error(w, "Failed to get attendees", http.StatusInternalServerError)
+		return
+	}
+
+	// Create a map of attendees for easy lookup in the template
+	attendeeMap := make(map[string]*data.User)
 	mu.Lock()
-	allUsersCopy := make(map[string]*data.User)
-	for k, v := range users {
-		allUsersCopy[k] = v
+	for _, attendee := range dbAttendees {
+		if u, ok := users[attendee.UserID]; ok {
+			attendeeMap[attendee.UserID] = u
+		} else {
+			// If user not in memory, create a basic user object
+			attendeeMap[attendee.UserID] = &data.User{
+				GoogleID: attendee.UserID,
+				Name:     attendee.Name,
+				Email:    attendee.Email,
+			}
+		}
 	}
 	mu.Unlock()
 
+	// Ensure organizer is in the attendee map
+	if _, ok := attendeeMap[event.OrganizerID]; !ok {
+		mu.Lock()
+		if u, ok := users[event.OrganizerID]; ok {
+			attendeeMap[event.OrganizerID] = u
+		} else {
+			// Fallback if organizer not in memory (shouldn't happen if logged in)
+			attendeeMap[event.OrganizerID] = &data.User{
+				GoogleID: event.OrganizerID,
+				Name:     "Organizer", // Placeholder name
+				Email:    "",
+			}
+		}
+		mu.Unlock()
+	}
+
 	formatPref := getFormatPreference(r)
-	view.OrganizerPage(dataEvent, eventUUIDStr, r.URL.String(), "/event/"+eventUUIDStr, user, allUsersCopy, formatPref, percentages).Render(context.Background(), w)
+	view.OrganizerPage(dataEvent, eventUUIDStr, r.URL.String(), "/event/"+eventUUIDStr, user, attendeeMap, formatPref, percentages).Render(context.Background(), w)
 }
 
 func handleThanksPage(w http.ResponseWriter, r *http.Request) {
@@ -653,25 +752,30 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	finalDate := r.FormValue("finalDate")
 
-	// Gather attendees
-	dbVotes, err := dbQueries.GetVotesByEvent(context.Background(), event.ID)
+	// Gather attendees from the attendees table
+	dbAttendees, err := dbQueries.GetAttendees(context.Background(), event.ID)
 	if err != nil {
-		http.Error(w, "Failed to get votes", http.StatusInternalServerError)
+		log.Printf("Failed to get attendees from DB: %v\n", err)
+		http.Error(w, "Failed to get attendees", http.StatusInternalServerError)
 		return
 	}
 
 	attendeeEmails := []string{}
-	uniqueVoterIDs := make(map[string]bool)
-	mu.Lock()
-	for _, vote := range dbVotes {
-		if !uniqueVoterIDs[vote.UserID] {
-			if voter := users[vote.UserID]; voter != nil {
-				attendeeEmails = append(attendeeEmails, voter.Email)
-			}
-			uniqueVoterIDs[vote.UserID] = true
+	for _, attendee := range dbAttendees {
+		attendeeEmails = append(attendeeEmails, attendee.Email)
+	}
+
+	// Ensure organizer's email is included if not already there
+	organizerEmailIncluded := false
+	for _, email := range attendeeEmails {
+		if email == user.Email {
+			organizerEmailIncluded = true
+			break
 		}
 	}
-	mu.Unlock()
+	if !organizerEmailIncluded {
+		attendeeEmails = append(attendeeEmails, user.Email)
+	}
 
 	// Create a Google Calendar client using the organizer's stored token.
 	client := googleOauthConfig.Client(context.Background(), user.AccessToken)

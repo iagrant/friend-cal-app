@@ -21,8 +21,11 @@ RETURNING *;
 -- name: GetAttendees :many
 SELECT * FROM attendees WHERE event_id = $1;
 
+-- name: GetAttendeeByEventAndUser :one
+SELECT * FROM attendees WHERE event_id = $1 AND user_id = $2;
+
 -- name: CreateAttendee :one
-INSERT INTO attendees (event_id, name, email) VALUES ($1, $2, $3) RETURNING *;
+INSERT INTO attendees (event_id, user_id, name, email) VALUES ($1, $2, $3, $4) RETURNING *;
 
 -- name: GetVotesByEvent :many
 SELECT * FROM votes WHERE event_id = $1;

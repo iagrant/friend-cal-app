@@ -52,6 +52,26 @@ templ OrganizerPage(event data.Event, eventUUID string, organizerURL string, gue
 			<p style="white-space: pre-wrap;">{ event.Description }</p>
 		}
 		<hr/>
+		<div>
+			<h4>Attendees:</h4>
+			<ul>
+				for _, attendee := range allUsers {
+					<li style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+						if attendee.PhotoURL != "" {
+							<img 
+								src={ attendee.PhotoURL } 
+								style="width: 50px; height: 50px; border-radius: 50%; margin-right: 8px;"
+								referrerpolicy="no-referrer"	
+								/>
+						}
+						<div>
+							<div>{ attendee.Name }</div>
+							<div style="font-size: 0.8rem; color: #777;">{ attendee.Email }</div>
+						</div>
+					</li>
+				}
+			</ul>
+		</div>
 
 		for _, date := range event.Dates {
 			<div>
