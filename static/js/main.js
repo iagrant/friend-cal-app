@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', function () {
-  // --- Consolidated Date Picker Initialization ---
+  setTimezoneCookie();
+
   const datePickerInput = document.querySelector('#date-picker');
   if (datePickerInput) {
     const hiddenDatesInput = document.getElementById('dates');
@@ -22,7 +23,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // --- Initialize Time Pickers ---
   const timeFormatIs12h = getCookie('time_format') === '12h';
   const timePickerConfig = {
     enableTime: true,
@@ -42,14 +42,12 @@ document.addEventListener('DOMContentLoaded', function () {
     flatpickr(endTimePicker, timePickerConfig);
   }
 
-  // --- Update Toggle Button Text ---
   const toggleButton = document.getElementById('time-format-toggle');
   if (toggleButton) {
     toggleButton.textContent = timeFormatIs12h ? 'Mode: 12h' : 'Mode: 24h';
   }
 });
 
-// Helper function to get a specific cookie by name
 function getCookie(name) {
   const value = `; ${document.cookie}`;
   const parts = value.split(`; ${name}=`);
@@ -67,23 +65,18 @@ function toggleTimeFormat() {
   location.reload();
 }
 
-// Add this new function to static/js/main.js
 
 function copyGuestLink() {
-  // Find the link and the button by their IDs
   const link = document.getElementById('guest-link');
   const copyBtn = document.getElementById('copy-btn');
   
   if (!link || !copyBtn) return;
 
-  // Use the Clipboard API to copy the link's href value
   navigator.clipboard.writeText(link.href).then(() => {
-    // On success, give the user feedback
     const originalIcon = copyBtn.textContent;
     copyBtn.textContent = '✅';
     copyBtn.disabled = true;
 
-    // Change it back after 2 seconds
     setTimeout(() => {
       copyBtn.textContent = originalIcon;
       copyBtn.disabled = false;
@@ -95,17 +88,23 @@ function copyGuestLink() {
 }
 
 function validateCreateForm() {
-  // Find the hidden input that holds the dates.
   const datesInput = document.getElementById('dates');
 
-  // Check if its value is empty.
   if (datesInput.value.trim() === '') {
-    // If it's empty, show an alert message.
     alert('Please select at least one date for the event.');
-    // And cancel the form submission.
     return false;
   }
 
-  // If dates are present, allow the form to submit.
   return true;
+}
+
+function setTimezoneCookie() {
+  if (!getCookie('timezone')) {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timezone) {
+      const expiryDate = new Date();
+      expiryDate.setHours(expiryDate.getHours() + 1);
+      document.cookie = `timezone=${timezone};path=/;expires=${expiryDate.toUTCString()};SameSite=Lax`;
+    }
+  }
 }
