@@ -1,0 +1,20 @@
+package view
+
+import "friend-cal-app/data"
+
+templ Settings(user *data.User) {
+	@layout("Settings", user) {
+		<div class="container">
+			<h1>Settings</h1>
+			<div style="margin-top: 2rem; border: 1px solid #d9534f; padding: 1rem; border-radius: 5px;">
+				<h3 style="color: #d9534f;">Danger Zone</h3>
+				<p>Deleting all your user data is permanent and cannot be undone.</p>
+				<p>This will include any votes and events you've created</p>
+				<p>It will also remove you from the attending list of events made by others.</p>
+				<form action="/settings/delete" method="post" onsubmit="return confirm('Are you sure you want to permanently delete all your data?');">
+					<button class="btn btn-danger" type="submit">Delete My Data</button>
+				</form>
+			</div>
+		</div>
+	}
+}

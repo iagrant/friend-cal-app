@@ -33,19 +33,22 @@ import (
 var (
 	googleOauthConfig *oauth2.Config
 	dbQueries         *db.Queries
+	dbConn			*pgx.Conn
 	encryptionKey     []byte
 )
 
 func main() {
 	// --- DB Conn ---
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+	var err error
+	dbConn, err = pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("Unable to connect to database: %v\n", err)
 	}
-	defer conn.Close(ctx)
-	dbQueries = db.New(conn)
+	defer dbConn.Close(ctx)
+	dbQueries = db.New(dbConn)
 	// --- End DB Conn ---
+
 
 	// --- Encryption Setup ---
 	keyString := os.Getenv("ENCRYPTION_KEY")
@@ -89,6 +92,8 @@ func main() {
 	mux.HandleFunc("GET /event/{uuid}/edit", handleShowEditEventPage)
 	mux.HandleFunc("POST /event/{uuid}/edit", handleUpdateEvent)
 	mux.HandleFunc("POST /event/{uuid}/delete", handleDeleteEvent)
+	mux.HandleFunc("GET /settings", handleSettings)
+	mux.HandleFunc("POST /settings/delete", handleDeleteMyData)
 
 	// 2. Register the file server using HandleFunc on a GET request.
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -361,7 +366,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	description := r.FormValue("description")
 	dates := strings.Split(datesStr, ",")
 	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
-		http.Redirect(w, r, "/?error="+ "Please+select+at+least+one+date.", http.StatusSeeOther)
+		http.Redirect(w, r, "/?error="+"Please+select+at+least+one+date.", http.StatusSeeOther)
 		return
 	}
 	for i, d := range dates {
@@ -373,16 +378,16 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		// Assuming time format is HH:MM
 		start, err := time.Parse("15:04", startTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error="+ "Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		end, err := time.Parse("15:04", endTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error="+ "Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		if end.Before(start) {
-			http.Redirect(w, r, "/?error="+ "End+time+cannot+be+before+start+time.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+"End+time+cannot+be+before+start+time.", http.StatusSeeOther)
 			return
 		}
 	}
@@ -947,6 +952,79 @@ func handleFinalizeEvent(w http.ResponseWriter, r *http.Request) {
 func handleFinalizeSuccess(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	view.FinalizeSuccessPage(user).Render(context.Background(), w)
+}
+
+func handleSettings(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+	view.Settings(user).Render(context.Background(), w)
+}
+
+func handleDeleteMyData(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	if user == nil {
+		http.Redirect(w, r, "/auth/google/login", http.StatusSeeOther)
+		return
+	}
+
+	ctx := context.Background()
+
+	// Use a transaction to ensure all or nothing deletion.
+	tx, err := dbConn.Begin(ctx)
+	if err != nil {
+		log.Printf("Failed to begin transaction: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx) // Rollback on error
+
+	qtx := dbQueries.WithTx(tx)
+
+	if err := qtx.DeleteUserVotes(ctx, user.GoogleID); err != nil {
+		log.Printf("Failed to delete user votes: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+	if err := qtx.DeleteUserAttendees(ctx, user.GoogleID); err != nil {
+		log.Printf("Failed to delete user attendees: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+	if err := qtx.DeleteUserOrganizedEvents(ctx, user.GoogleID); err != nil {
+		log.Printf("Failed to delete user organized events: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+	if err := qtx.DeleteUserSessions(ctx, user.GoogleID); err != nil {
+		log.Printf("Failed to delete user sessions: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+	if err := qtx.DeleteUser(ctx, user.GoogleID); err != nil {
+		log.Printf("Failed to delete user: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("Failed to commit transaction: %v", err)
+		http.Error(w, "Failed to delete data", http.StatusInternalServerError)
+		return
+	}
+
+	// After deletion, log the user out and redirect to the homepage.
+	http.SetCookie(w, &http.Cookie{
+		Name:   "session_id",
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1,
+	})
+
+	// Redirect to a page confirming data deletion.
+	http.Redirect(w, r, "/?message=Your+data+has+been+deleted.", http.StatusSeeOther)
 }
 
 func getFormatPreference(r *http.Request) string {

@@ -19,6 +19,7 @@ templ layout(title string, user *data.User) {
 					// If the user is logged in...
 					if user != nil {
                         <a href="/my-events">My Events</a>
+                        <a href="/settings">Settings</a>
 						<span>Hello, { user.Name }</span>
 						<a href="/auth/google/logout">Sign Out</a>
 					}

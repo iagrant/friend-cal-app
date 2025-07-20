@@ -70,3 +70,18 @@ SELECT * FROM sessions WHERE id = $1;
 
 -- name: DeleteSession :exec
 DELETE FROM sessions WHERE id = $1;
+
+-- name: DeleteUserVotes :exec
+DELETE FROM votes WHERE user_id = $1;
+
+-- name: DeleteUserAttendees :exec
+DELETE FROM attendees WHERE user_id = $1;
+
+-- name: DeleteUserOrganizedEvents :exec
+DELETE FROM events WHERE organizer_id = $1;
+
+-- name: DeleteUserSessions :exec
+DELETE FROM sessions WHERE user_id = $1;
+
+-- name: DeleteUser :exec
+DELETE FROM users WHERE google_id = $1;
