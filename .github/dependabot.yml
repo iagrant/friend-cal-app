@@ -6,4 +6,4 @@ updates:
     directory: "/"
     # Check for updates every week
     schedule:
-      interval: "daily"
+      interval: "weekly"
