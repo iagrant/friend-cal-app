@@ -106,15 +106,24 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	b := make([]byte, 16)
 	rand.Read(b)
 	state := base64.URLEncoding.EncodeToString(b)
+	
+	// Validate redirect_url to prevent open redirects
 	redirectURL := r.URL.Query().Get("redirect_url")
 	if redirectURL != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     "login_redirect_url",
-			Value:    redirectURL,
-			Path:     "/",
-			Expires:  time.Now().Add(10 * time.Minute),
-			HttpOnly: true,
-		})
+		// A simple check: ensure it's a relative path or a path within your domain.
+		// For a more robust solution, you might maintain a whitelist of allowed domains.
+		if strings.HasPrefix(redirectURL, "/") && !strings.HasPrefix(redirectURL, "//") {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "login_redirect_url",
+				Value:    redirectURL,
+				Path:     "/",
+				Expires:  time.Now().Add(10 * time.Minute),
+				HttpOnly: true,
+			})
+		} else {
+			// Log or handle invalid redirect_url attempts
+			log.Printf("Invalid redirect_url attempted: %s", redirectURL)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
