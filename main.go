@@ -191,8 +191,8 @@ func getUser(r *http.Request) *data.User {
 	if dbUser.AccessTokenEncrypted.Valid {
 		decryptedToken, err := decryptToken(dbUser.AccessTokenEncrypted.String)
 		if err != nil {
-			log.Printf("Failed to decrypt access token: %v", err)
-			// Decide if you want to return the user without a token or return nil
+			log.Printf("Failed to decrypt access token for user %s: %v", dbUser.GoogleID, err)
+			return nil // Treat as not logged in if token cannot be decrypted
 		} else {
 			accessToken = decryptedToken
 		}
