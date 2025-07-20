@@ -23,4 +23,5 @@ type User struct {
 	Email       string
 	PhotoURL    string
 	AccessToken *oauth2.Token
+	CSRFToken   string
 }

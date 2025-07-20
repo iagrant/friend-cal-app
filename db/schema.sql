@@ -40,6 +40,7 @@ CREATE TABLE users (
 
 CREATE TABLE sessions (
     id UUID PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(google_id) ON DELETE CASCADE,
+    user_id VARCHAR(255) NOT NULL REFERENCES users(google_id) ON DELETE CASCADE,
+    csrf_token TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

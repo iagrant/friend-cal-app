@@ -129,6 +129,7 @@ templ OrganizerPage(event data.Event, eventUUID string, organizerURL string, gue
 			<h3 style="color: #d9534f;">Danger Zone</h3>
 			<p>Deleting an event is permanent and cannot be undone.</p>
 			<form action={ "/event/" + eventUUID + "/delete" } method="post" onsubmit="return confirm('Are you sure you want to permanently delete this event?');">
+				<input type="hidden" name="csrf_token" value={ user.CSRFToken }/>
 				<button type="submit" class="button" style="background-color: #d9534f; border-color: #d9534f;">Delete This Event</button>
 			</form>
 		</div>

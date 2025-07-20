@@ -12,6 +12,7 @@ templ Settings(user *data.User) {
 				<p>This will include any votes and events you've created</p>
 				<p>It will also remove you from the attending list of events made by others.</p>
 				<form action="/settings/delete" method="post" onsubmit="return confirm('Are you sure you want to permanently delete all your data?');">
+					<input type="hidden" name="csrf_token" value={ user.CSRFToken }/>
 					<button class="btn btn-danger" type="submit">Delete My Data</button>
 				</form>
 			</div>

@@ -9,6 +9,7 @@ templ CreatePage(user *data.User) {
 		if user != nil {
 			<h1>Create a New Event</h1>
 			<form action="/create" method="post" onsubmit="return validateCreateForm()">
+				<input type="hidden" name="csrf_token" value={ user.CSRFToken }/>
 				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 					<div>
 						<label for="eventName">Event Name:</label>

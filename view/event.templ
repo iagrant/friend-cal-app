@@ -31,6 +31,7 @@ templ EventPage(event data.Event, eventUUID string, user *data.User, userVotes m
 
 			// Add the onsubmit attribute to the form tag.
 			<form action={ "/event/" + eventUUID + "/vote" } method="post" onsubmit="document.getElementById('submit-btn').disabled = true;">
+				<input type="hidden" name="csrf_token" value={ user.CSRFToken }/>
 				<fieldset>
 					<legend>Available Dates</legend>
 					for _, date := range event.Dates {

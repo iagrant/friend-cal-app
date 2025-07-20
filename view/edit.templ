@@ -10,6 +10,7 @@ templ EditEventPage(event *data.Event, eventUUID string, user *data.User) {
 	@layout("Edit Event", user) {
 		<h1>Edit Event</h1>
 		<form action={ "/event/" + eventUUID + "/edit" } method="post" onsubmit="return validateCreateForm()">
+			<input type="hidden" name="csrf_token" value={ user.CSRFToken }/>
 
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 				<div>

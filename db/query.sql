@@ -61,9 +61,12 @@ ON CONFLICT (google_id) DO UPDATE SET
 RETURNING *;
 
 -- name: CreateSession :one
-INSERT INTO sessions (id, user_id)
-VALUES ($1, $2)
+INSERT INTO sessions (id, user_id, csrf_token)
+VALUES ($1, $2, $3)
 RETURNING *;
+
+-- name: UpdateSessionCSRF :one
+UPDATE sessions SET csrf_token = $2 WHERE id = $1 RETURNING *;
 
 -- name: GetSession :one
 SELECT * FROM sessions WHERE id = $1;

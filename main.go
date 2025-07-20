@@ -33,7 +33,7 @@ import (
 var (
 	googleOauthConfig *oauth2.Config
 	dbQueries         *db.Queries
-	dbConn			*pgx.Conn
+	dbConn            *pgx.Conn
 	encryptionKey     []byte
 )
 
@@ -48,7 +48,6 @@ func main() {
 	defer dbConn.Close(ctx)
 	dbQueries = db.New(dbConn)
 	// --- End DB Conn ---
-
 
 	// --- Encryption Setup ---
 	keyString := os.Getenv("ENCRYPTION_KEY")
@@ -78,22 +77,22 @@ func main() {
 
 	// 1. Register all your specific page handlers first.
 	mux.HandleFunc("GET /", handleShowCreatePage)
-	mux.HandleFunc("POST /create", handleCreateEvent)
+	mux.Handle("POST /create", csrfProtect(http.HandlerFunc(handleCreateEvent)))
 	mux.HandleFunc("GET /event/{uuid}", handleShowEventPage)
-	mux.HandleFunc("POST /event/{uuid}/vote", handleVote)
+	mux.Handle("POST /event/{uuid}/vote", csrfProtect(http.HandlerFunc(handleVote)))
 	mux.HandleFunc("GET /event/{uuid}/organizer", handleShowOrganizerPage)
 	mux.HandleFunc("GET /thanks", handleThanksPage)
 	mux.HandleFunc("GET /auth/google/login", handleGoogleLogin)
 	mux.HandleFunc("GET /auth/google/callback", handleGoogleCallback)
 	mux.HandleFunc("GET /auth/google/logout", handleLogout)
 	mux.HandleFunc("GET /my-events", handleMyEvents)
-	mux.HandleFunc("POST /event/{uuid}/finalize", handleFinalizeEvent)
+	mux.Handle("POST /event/{uuid}/finalize", csrfProtect(http.HandlerFunc(handleFinalizeEvent)))
 	mux.HandleFunc("GET /finalize-success", handleFinalizeSuccess)
 	mux.HandleFunc("GET /event/{uuid}/edit", handleShowEditEventPage)
-	mux.HandleFunc("POST /event/{uuid}/edit", handleUpdateEvent)
-	mux.HandleFunc("POST /event/{uuid}/delete", handleDeleteEvent)
+	mux.Handle("POST /event/{uuid}/edit", csrfProtect(http.HandlerFunc(handleUpdateEvent)))
+	mux.Handle("POST /event/{uuid}/delete", csrfProtect(http.HandlerFunc(handleDeleteEvent)))
 	mux.HandleFunc("GET /settings", handleSettings)
-	mux.HandleFunc("POST /settings/delete", handleDeleteMyData)
+	mux.Handle("POST /settings/delete", csrfProtect(http.HandlerFunc(handleDeleteMyData)))
 
 	// 2. Register the file server using HandleFunc on a GET request.
 	fileServer := http.FileServer(http.Dir("./static"))
@@ -196,6 +195,7 @@ func getUser(r *http.Request) *data.User {
 		Email:       dbUser.Email,
 		PhotoURL:    dbUser.PhotoUrl.String,
 		AccessToken: accessToken,
+		CSRFToken:   session.CsrfToken.String,
 	}
 }
 
@@ -293,9 +293,17 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Create a new session.
 	sessionID := uuid.New()
+	csrfToken, err := generateCSRFToken()
+	if err != nil {
+		log.Printf("Failed to generate CSRF token: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
 	_, err = dbQueries.CreateSession(context.Background(), db.CreateSessionParams{
-		ID:     pgtype.UUID{Bytes: sessionID, Valid: true},
-		UserID: googleID,
+		ID:        pgtype.UUID{Bytes: sessionID, Valid: true},
+		UserID:    googleID,
+		CsrfToken: pgtype.Text{String: csrfToken, Valid: true},
 	})
 	if err != nil {
 		log.Printf("Failed to create session: %v", err)
@@ -308,8 +316,8 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		Name:     "session_id",
 		Value:    sessionID.String(),
 		Path:     "/",
-		HttpOnly: true,         // Makes the cookie inaccessible to JavaScript
-		Secure:   r.TLS != nil, // Only send over HTTPS in production
+		HttpOnly: true, // Makes the cookie inaccessible to JavaScript
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 		SameSite: http.SameSiteLaxMode,
 	})
 	redirectCookie, err := r.Cookie("login_redirect_url")
@@ -331,6 +339,51 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to the home page.
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func generateCSRFToken() (string, error) {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func csrfProtect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// We only need to protect non-GET requests
+		if r.Method == http.MethodGet {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("session_id")
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		sessionID, err := uuid.Parse(cookie.Value)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		session, err := dbQueries.GetSession(context.Background(), pgtype.UUID{Bytes: sessionID, Valid: true})
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		formToken := r.FormValue("csrf_token")
+		if formToken == "" || formToken != session.CsrfToken.String {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleShowCreatePage(w http.ResponseWriter, r *http.Request) {
