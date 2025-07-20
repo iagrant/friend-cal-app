@@ -1,4 +1,4 @@
-module friend-cal-app
+module github.com/iagrant/friend-cal-app
 
 go 1.24.4
 
@@ -35,5 +35,3 @@ require (
 	google.golang.org/grpc v1.73.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 )
-
-replace friend-cal-app => ./
