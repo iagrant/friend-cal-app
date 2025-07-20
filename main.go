@@ -2,20 +2,21 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
-	"net/http"
-	"strings"
-	"sync"
-
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"friend-cal-app/data"
-	"friend-cal-app/view"
-	"os"
-	"time"
-
 	"friend-cal-app/db"
+	"friend-cal-app/view"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,11 +33,7 @@ import (
 var (
 	googleOauthConfig *oauth2.Config
 	dbQueries         *db.Queries
-	mu                sync.Mutex
-	// sessions maps a random session ID (the cookie value) to a Google user ID.
-	sessions = make(map[string]string)
-	// users maps a Google user ID to a User object.
-	users = make(map[string]*data.User)
+	encryptionKey     []byte
 )
 
 func main() {
@@ -50,6 +47,17 @@ func main() {
 	dbQueries = db.New(conn)
 	// --- End DB Conn ---
 
+	// --- Encryption Setup ---
+	keyString := os.Getenv("ENCRYPTION_KEY")
+	if keyString == "" {
+		log.Fatal("ENCRYPTION_KEY environment variable not set")
+	}
+	encryptionKey, err = base64.StdEncoding.DecodeString(keyString)
+	if err != nil {
+		log.Fatalf("Failed to decode encryption key: %v", err)
+	}
+	// --- End Encryption Setup ---
+
 	// --- OAUTH SETUP ---
 	googleOauthConfig = &oauth2.Config{
 		RedirectURL:  "http://localhost:8080/auth/google/callback",
@@ -57,7 +65,6 @@ func main() {
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		Scopes: []string{
 			"https://www.googleapis.com/auth/calendar.events",
-			"https://www.googleapis.com/auth/contacts.readonly",
 			"https://www.googleapis.com/auth/userinfo.profile",
 			"https://www.googleapis.com/auth/userinfo.email",
 		},
@@ -113,11 +120,28 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 	})
 
-	url := googleOauthConfig.AuthCodeURL(state)
+	url := googleOauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("session_id")
+	if err != nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	sessionID, err := uuid.Parse(cookie.Value)
+	if err != nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	err = dbQueries.DeleteSession(context.Background(), pgtype.UUID{Bytes: sessionID, Valid: true})
+	if err != nil {
+		log.Printf("Failed to delete session: %v", err)
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:   "session_id",
 		Value:  "",
@@ -135,14 +159,39 @@ func getUser(r *http.Request) *data.User {
 		return nil
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	googleID, ok := sessions[cookie.Value]
-	if !ok {
+	sessionID, err := uuid.Parse(cookie.Value)
+	if err != nil {
 		return nil
 	}
 
-	return users[googleID]
+	session, err := dbQueries.GetSession(context.Background(), pgtype.UUID{Bytes: sessionID, Valid: true})
+	if err != nil {
+		return nil
+	}
+
+	dbUser, err := dbQueries.GetUser(context.Background(), session.UserID)
+	if err != nil {
+		return nil
+	}
+
+	var accessToken *oauth2.Token
+	if dbUser.AccessTokenEncrypted.Valid {
+		decryptedToken, err := decryptToken(dbUser.AccessTokenEncrypted.String)
+		if err != nil {
+			log.Printf("Failed to decrypt access token: %v", err)
+			// Decide if you want to return the user without a token or return nil
+		} else {
+			accessToken = decryptedToken
+		}
+	}
+
+	return &data.User{
+		GoogleID:    dbUser.GoogleID,
+		Name:        dbUser.Name,
+		Email:       dbUser.Email,
+		PhotoURL:    dbUser.PhotoUrl.String,
+		AccessToken: accessToken,
+	}
 }
 
 func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +223,13 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if the user granted the necessary calendar scope.
+	grantedScopes, ok := token.Extra("scope").(string)
+	if !ok || !strings.Contains(grantedScopes, "https://www.googleapis.com/auth/calendar.events") {
+		http.Redirect(w, r, "/?error=Calendar+permission+is+required+to+use+this+application.", http.StatusSeeOther)
+		return
+	}
+
 	// Use the token to get an API client.
 	client := googleOauthConfig.Client(context.Background(), token)
 	peopleService, err := people.NewService(context.Background(), option.WithHTTPClient(client))
@@ -196,27 +252,56 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		photoURL = person.Photos[0].Url
 	}
 
-	// Extract user info and store it.
-	mu.Lock()
 	googleID := person.ResourceName[len("people/"):]
-	user := &data.User{
-		GoogleID:    googleID,
-		Name:        person.Names[0].DisplayName,
-		Email:       person.EmailAddresses[0].Value,
-		PhotoURL:    photoURL,
-		AccessToken: token,
+
+	encryptedToken, err := encryptToken(token)
+	if err != nil {
+		log.Printf("Failed to encrypt access token: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
-	users[googleID] = user
+
+	// Basic validation
+	log.Printf("Upserting user: google_id=%s, name=%s, email=%s, photo_url=%s", googleID, person.Names[0].DisplayName, person.EmailAddresses[0].Value, photoURL)
+	if len(person.Names) == 0 || person.Names[0].DisplayName == "" {
+		http.Error(w, "Could not get user name from Google", http.StatusInternalServerError)
+		return
+	}
+	if len(person.EmailAddresses) == 0 || person.EmailAddresses[0].Value == "" {
+		http.Error(w, "Could not get user email from Google", http.StatusInternalServerError)
+		return
+	}
+
+	// Create or update user in the database
+	_, err = dbQueries.UpsertUser(context.Background(), db.UpsertUserParams{
+		GoogleID:             googleID,
+		Name:                 person.Names[0].DisplayName,
+		Email:                person.EmailAddresses[0].Value,
+		PhotoUrl:             pgtype.Text{String: photoURL, Valid: photoURL != ""},
+		AccessTokenEncrypted: pgtype.Text{String: encryptedToken, Valid: true},
+	})
+	if err != nil {
+		log.Printf("Failed to upsert user: %v", err)
+		http.Error(w, "Failed to save user data", http.StatusInternalServerError)
+		return
+	}
 
 	// Create a new session.
-	sessionID := uuid.New().String()
-	sessions[sessionID] = googleID
-	mu.Unlock()
+	sessionID := uuid.New()
+	_, err = dbQueries.CreateSession(context.Background(), db.CreateSessionParams{
+		ID:     pgtype.UUID{Bytes: sessionID, Valid: true},
+		UserID: googleID,
+	})
+	if err != nil {
+		log.Printf("Failed to create session: %v", err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
 
 	// Set a secure cookie on the user's browser.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_id",
-		Value:    sessionID,
+		Value:    sessionID.String(),
 		Path:     "/",
 		HttpOnly: true,         // Makes the cookie inaccessible to JavaScript
 		Secure:   r.TLS != nil, // Only send over HTTPS in production
@@ -276,7 +361,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	description := r.FormValue("description")
 	dates := strings.Split(datesStr, ",")
 	if datesStr == "" || len(dates) == 0 || dates[0] == "" {
-		http.Redirect(w, r, "/?error="+"Please+select+at+least+one+date.", http.StatusSeeOther)
+		http.Redirect(w, r, "/?error="+ "Please+select+at+least+one+date.", http.StatusSeeOther)
 		return
 	}
 	for i, d := range dates {
@@ -288,16 +373,16 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		// Assuming time format is HH:MM
 		start, err := time.Parse("15:04", startTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error="+"Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+ "Invalid+start+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		end, err := time.Parse("15:04", endTimeStr)
 		if err != nil {
-			http.Redirect(w, r, "/?error="+"Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+ "Invalid+end+time+format.+Please+use+HH:MM.", http.StatusSeeOther)
 			return
 		}
 		if end.Before(start) {
-			http.Redirect(w, r, "/?error="+"End+time+cannot+be+before+start+time.", http.StatusSeeOther)
+			http.Redirect(w, r, "/?error="+ "End+time+cannot+be+before+start+time.", http.StatusSeeOther)
 			return
 		}
 	}
@@ -399,39 +484,51 @@ func handleShowEventPage(w http.ResponseWriter, r *http.Request) {
 
 	// Create a map of attendees for easy lookup in the template
 	attendeeMap := make(map[string]*data.User)
-	mu.Lock()
 	for _, attendee := range dbAttendees {
-		if u, ok := users[attendee.UserID]; ok {
-			attendeeMap[attendee.UserID] = u
-		} else {
-			// If user not in memory, create a basic user object
+		dbUser, err := dbQueries.GetUser(context.Background(), attendee.UserID)
+		if err != nil {
+			// If user not in DB, create a basic user object
 			attendeeMap[attendee.UserID] = &data.User{
 				GoogleID: attendee.UserID,
 				Name:     attendee.Name,
 				Email:    attendee.Email,
 			}
+		} else {
+			attendeeMap[attendee.UserID] = &data.User{
+				GoogleID: dbUser.GoogleID,
+				Name:     dbUser.Name,
+				Email:    dbUser.Email,
+				PhotoURL: dbUser.PhotoUrl.String,
+			}
 		}
 	}
-	mu.Unlock()
 
 	// Ensure organizer is in the attendee map
 	if _, ok := attendeeMap[event.OrganizerID]; !ok {
-		mu.Lock()
-		if u, ok := users[event.OrganizerID]; ok {
-			attendeeMap[event.OrganizerID] = u
-		} else {
-			// Fallback if organizer not in memory (shouldn't happen if logged in)
+		dbUser, err := dbQueries.GetUser(context.Background(), event.OrganizerID)
+		if err != nil {
+			// Fallback if organizer not in DB (shouldn't happen if logged in)
 			attendeeMap[event.OrganizerID] = &data.User{
 				GoogleID: event.OrganizerID,
 				Name:     "Organizer", // Placeholder name
 				Email:    "",
 			}
+		} else {
+			attendeeMap[event.OrganizerID] = &data.User{
+				GoogleID: dbUser.GoogleID,
+				Name:     dbUser.Name,
+				Email:    dbUser.Email,
+				PhotoURL: dbUser.PhotoUrl.String,
+			}
 		}
-		mu.Unlock()
 	}
 
 	// Pass all necessary data to the template
-	view.EventPage(dataEvent, eventUUIDStr, user, userVotes, r.URL.String(), formatPref, event.OrganizerID == user.GoogleID).Render(context.Background(), w)
+	isOrganizer := false
+	if user != nil {
+		isOrganizer = event.OrganizerID == user.GoogleID
+	}
+	view.EventPage(dataEvent, eventUUIDStr, user, userVotes, r.URL.String(), formatPref, isOrganizer).Render(context.Background(), w)
 }
 
 func handleMyEvents(w http.ResponseWriter, r *http.Request) {
@@ -635,35 +732,41 @@ func handleShowOrganizerPage(w http.ResponseWriter, r *http.Request) {
 
 	// Create a map of attendees for easy lookup in the template
 	attendeeMap := make(map[string]*data.User)
-	mu.Lock()
 	for _, attendee := range dbAttendees {
-		if u, ok := users[attendee.UserID]; ok {
-			attendeeMap[attendee.UserID] = u
-		} else {
-			// If user not in memory, create a basic user object
+		dbUser, err := dbQueries.GetUser(context.Background(), attendee.UserID)
+		if err != nil {
 			attendeeMap[attendee.UserID] = &data.User{
 				GoogleID: attendee.UserID,
 				Name:     attendee.Name,
 				Email:    attendee.Email,
 			}
+		} else {
+			attendeeMap[attendee.UserID] = &data.User{
+				GoogleID: dbUser.GoogleID,
+				Name:     dbUser.Name,
+				Email:    dbUser.Email,
+				PhotoURL: dbUser.PhotoUrl.String,
+			}
 		}
 	}
-	mu.Unlock()
 
 	// Ensure organizer is in the attendee map
 	if _, ok := attendeeMap[event.OrganizerID]; !ok {
-		mu.Lock()
-		if u, ok := users[event.OrganizerID]; ok {
-			attendeeMap[event.OrganizerID] = u
-		} else {
-			// Fallback if organizer not in memory (shouldn't happen if logged in)
+		dbUser, err := dbQueries.GetUser(context.Background(), event.OrganizerID)
+		if err != nil {
 			attendeeMap[event.OrganizerID] = &data.User{
 				GoogleID: event.OrganizerID,
 				Name:     "Organizer", // Placeholder name
 				Email:    "",
 			}
+		} else {
+			attendeeMap[event.OrganizerID] = &data.User{
+				GoogleID: dbUser.GoogleID,
+				Name:     dbUser.Name,
+				Email:    dbUser.Email,
+				PhotoURL: dbUser.PhotoUrl.String,
+			}
 		}
-		mu.Unlock()
 	}
 
 	formatPref := getFormatPreference(r)
@@ -988,4 +1091,66 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect back to the organizer page.
 	http.Redirect(w, r, "/event/"+eventUUIDStr+"/organizer", http.StatusSeeOther)
+}
+
+// --- ENCRYPTION HELPERS ---
+func encryptToken(token *oauth2.Token) (string, error) {
+	tokenData, err := json.Marshal(token)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal token: %w", err)
+	}
+
+	block, err := aes.NewCipher(encryptionKey)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, []byte(tokenData), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func decryptToken(encryptedToken string) (*oauth2.Token, error) {
+	data, err := base64.StdEncoding.DecodeString(encryptedToken)
+	if err != nil {
+		return nil, err
+	}
+
+	block, err := aes.NewCipher(encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Now, unmarshal the JSON back into a token struct.
+	var token oauth2.Token
+	if err := json.Unmarshal(plaintext, &token); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
+	}
+
+	return &token, nil
 }

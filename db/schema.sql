@@ -28,3 +28,18 @@ CREATE TABLE votes (
     date TEXT NOT NULL,
     UNIQUE(event_id, user_id, date)
 );
+
+CREATE TABLE users (
+    google_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    photo_url TEXT,
+    access_token_encrypted TEXT, -- Encrypted OAuth2 access token
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE sessions (
+    id UUID PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(google_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

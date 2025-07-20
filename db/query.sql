@@ -46,3 +46,27 @@ SELECT * FROM events WHERE organizer_id = $1 ORDER BY created_at DESC;
 SELECT DISTINCT e.* FROM events e
 JOIN votes v ON e.id = v.event_id
 WHERE v.user_id = $1 ORDER BY created_at DESC;
+
+-- name: GetUser :one
+SELECT * FROM users WHERE google_id = $1;
+
+-- name: UpsertUser :one
+INSERT INTO users (google_id, name, email, photo_url, access_token_encrypted)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (google_id) DO UPDATE SET
+    name = EXCLUDED.name,
+    email = EXCLUDED.email,
+    photo_url = EXCLUDED.photo_url,
+    access_token_encrypted = EXCLUDED.access_token_encrypted
+RETURNING *;
+
+-- name: CreateSession :one
+INSERT INTO sessions (id, user_id)
+VALUES ($1, $2)
+RETURNING *;
+
+-- name: GetSession :one
+SELECT * FROM sessions WHERE id = $1;
+
+-- name: DeleteSession :exec
+DELETE FROM sessions WHERE id = $1;
